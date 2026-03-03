@@ -26,26 +26,30 @@ TOKEN_URL_SERVER = "https://auth.tiktok-shops.com/api/v2/token/get" # Untuk Serv
 
 # --- HELPER FUNCTIONS ---
 
-def generate_signature(path, params, app_secret):
-    """Generate HMAC-SHA256 signature untuk TikTok Shop API"""
-    filtered_params = {k: v for k, v in params.items() 
-                      if k not in ["sign", "access_token"] and v is not None}
-    sorted_keys = sorted(filtered_params.keys())
+def generate_signature(path, params, app_secret, body=None):
+    # 1. Urutkan parameter secara alfabetis (kecuali sign dan access_token)
+    keys = sorted([k for k in params.keys() if k not in ["sign", "access_token"]])
     
-    param_string = ""
-    for key in sorted_keys:
-        param_string += f"{key}{filtered_params[key]}"
+    # 2. Gabungkan key dan value
+    param_string = "".join([f"{k}{params[k]}" for k in keys])
     
-    signature_base = f"{app_secret}{path}{param_string}{app_secret}"
+    # 3. Tambahkan body jika ada (untuk POST request)
+    body_string = ""
+    if body:
+        # TikTok minta body dalam bentuk raw string JSON tanpa spasi yang tidak perlu
+        body_string = json.dumps(body, separators=(',', ':'))
     
+    # 4. Pola: secret + path + params + body + secret
+    base_string = f"{app_secret}{path}{param_string}{body_string}{app_secret}"
+    
+    # 5. HMAC-SHA256
     signature = hmac.new(
-        app_secret.encode('utf-8'),
-        signature_base.encode('utf-8'),
+        app_secret.encode("utf-8"),
+        base_string.encode("utf-8"),
         hashlib.sha256
     ).hexdigest()
     
     return signature
-
 def get_auth_url():
     """Generate URL otorisasi TikTok Shop - HANYA app_key dan state yang diperlukan"""
     # PERBAIKAN: Tidak include app_secret di URL authorize
@@ -74,7 +78,8 @@ def exchange_auth_code(auth_code):
 def refresh_access_token(refresh_token):
     """Refresh token yang sudah expired"""
     endpoint = "/api/v2/token/refresh"
-    url = f"{AUTH_URL}{endpoint}"
+    # url = f"{AUTH_URL}{endpoint}"
+    url = "https://auth.tiktok-shops.com/api/v2/token/refresh"
     
     params = {
         "app_key": APP_KEY,
@@ -89,14 +94,15 @@ def refresh_access_token(refresh_token):
     except Exception as e:
         return {"code": -1, "message": str(e)}
 
-def make_tiktok_request(endpoint, access_token, shop_id=None, additional_params=None):
+def make_tiktok_request(endpoint, access_token, shop_id=None, method="POST", body=None):
     """Generic function untuk call TikTok Shop API dengan signature"""
     timestamp = int(time.time())
     
     params = {
         "app_key": APP_KEY,
         "timestamp": timestamp,
-        "access_token": access_token
+        "access_token": access_token,
+        "timestamp": timestamp,
     }
     
     if shop_id:
@@ -107,17 +113,21 @@ def make_tiktok_request(endpoint, access_token, shop_id=None, additional_params=
         additional_params = {k: v for k, v in additional_params.items() if v is not None}
         params.update(additional_params)
     
-    sign = generate_signature(endpoint, params, APP_SECRET)
+    sign = generate_signature(endpoint, params, APP_SECRET, body)
     params["sign"] = sign
     
     url = f"{BASE_URL}{endpoint}"
+    headers = {"Content-Type": "application/json"}
     
     try:
-        response = requests.get(url, params=params, timeout=60)
-        response.raise_for_status()
+        if method.upper() == "POST":
+            # Kirim body sebagai JSON string
+            response = requests.post(url, params=query_params, json=body, headers=headers)
+        else:
+            response = requests.get(url, params=query_params, headers=headers)
+            
         return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"API Error: {str(e)}")
+    except Exception as e:
         return {"code": -1, "message": str(e)}
 
 # --- KONVERSI WAKTU UTC-7 (WIB) ---
