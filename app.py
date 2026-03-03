@@ -21,7 +21,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # TikTok Shop API Endpoints
 BASE_URL = "https://open-api.tiktokglobalshop.com"
 AUTH_URL = "https://auth.tiktok-shops.com"
-AUTH_URL_SELLER = "https://auth.tiktok-shops.com/oauth/authorize" # Untuk Browser
+# AUTH_URL_SELLER = "https://auth.tiktok-shops.com/oauth/authorize" # Untuk Browser
+AUTH_URL_SELLER = "https://services.tiktokshop.com/open/authorize"
 TOKEN_URL_SERVER = "https://auth.tiktok-shops.com/api/v2/token/get" # Untuk Server-to-Server
 
 # --- HELPER FUNCTIONS ---
@@ -51,19 +52,27 @@ def generate_signature(path, params, app_secret, body=None):
     
     return signature
 def get_auth_url():
-    """Generate URL otorisasi TikTok Shop - HANYA app_key dan state yang diperlukan"""
-    # PERBAIKAN: Tidak include app_secret di URL authorize
-    return f"{AUTH_URL_SELLER}/api/v2/token/get?app_key={APP_KEY}&state=TiktokbroAuth"
+    """Generate URL otorisasi TikTok Shop yang benar"""
+    # Format yang benar untuk TikTok Shop Seller Authorization
+    params = {
+        "app_key": APP_KEY,
+        "state": "TiktokbroAuth"
+    }
+    
+    # Build query string
+    query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+    
+    # URL lengkap
+    return f"{AUTH_URL_SELLER}?{query_string}"
 
 def exchange_auth_code(auth_code):
     """Tukar auth code dengan access token"""
-    endpoint = "/api/v2/token/get"
-    # url = f"{AUTH_URL}{endpoint}"
-    url = TOKEN_URL_SERVER
+    # PASTIKAN TIDAK ADA SPASI DI URL
+    url = f"{AUTH_URL}/api/v2/token/get"
     
     params = {
         "app_key": APP_KEY,
-        "app_secret": APP_SECRET,  # app_secret di sini untuk autentikasi server
+        "app_secret": APP_SECRET,
         "auth_code": auth_code,
         "grant_type": "authorized_app"
     }
@@ -77,9 +86,7 @@ def exchange_auth_code(auth_code):
 
 def refresh_access_token(refresh_token):
     """Refresh token yang sudah expired"""
-    endpoint = "/api/v2/token/refresh"
-    # url = f"{AUTH_URL}{endpoint}"
-    url = "https://auth.tiktok-shops.com/api/v2/token/refresh"
+    url = f"{AUTH_URL}/api/v2/token/refresh"
     
     params = {
         "app_key": APP_KEY,
@@ -93,7 +100,7 @@ def refresh_access_token(refresh_token):
         return response.json()
     except Exception as e:
         return {"code": -1, "message": str(e)}
-
+        
 def make_tiktok_request(endpoint, access_token, shop_id=None, method="POST", body=None):
     """Generic function untuk call TikTok Shop API dengan signature"""
     timestamp = int(time.time())
