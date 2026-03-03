@@ -21,6 +21,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # TikTok Shop API Endpoints
 BASE_URL = "https://open-api.tiktokglobalshop.com"
 AUTH_URL = "https://auth.tiktok-shops.com"
+AUTH_URL_SELLER = "https://auth.tiktok-shops.com/oauth/authorize" # Untuk Browser
+TOKEN_URL_SERVER = "https://auth.tiktok-shops.com/api/v2/token/get" # Untuk Server-to-Server
 
 # --- HELPER FUNCTIONS ---
 
@@ -47,12 +49,13 @@ def generate_signature(path, params, app_secret):
 def get_auth_url():
     """Generate URL otorisasi TikTok Shop - HANYA app_key dan state yang diperlukan"""
     # PERBAIKAN: Tidak include app_secret di URL authorize
-    return f"{AUTH_URL}/api/v2/token/get?app_key={APP_KEY}&state=TiktokbroAuth"
+    return f"{AUTH_URL_SELLER}/api/v2/token/get?app_key={APP_KEY}&state=TiktokbroAuth"
 
 def exchange_auth_code(auth_code):
     """Tukar auth code dengan access token"""
     endpoint = "/api/v2/token/get"
-    url = f"{AUTH_URL}{endpoint}"
+    # url = f"{AUTH_URL}{endpoint}"
+    url = TOKEN_URL_SERVER
     
     params = {
         "app_key": APP_KEY,
