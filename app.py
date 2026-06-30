@@ -4,77 +4,77 @@ import time
 import hmac
 import hashlib
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone  # ✅ TAMBAH: timezone
 from supabase import create_client, Client
 import json
 from io import BytesIO
+import urllib.parse
 
 # --- KONFIGURASI API & DB ---
 APP_KEY = st.secrets["TIKTOK_APP_KEY"]
 APP_SECRET = st.secrets["TIKTOK_APP_SECRET"]
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-REDIRECT_URI = "https://tiktokbro.streamlit.app/"  # WAJIB sama dengan Partner Center
+REDIRECT_URI = "https://tiktokbro.streamlit.app/"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # TikTok Shop API Endpoints
 BASE_URL = "https://open-api.tiktokglobalshop.com"
 AUTH_URL = "https://auth.tiktok-shops.com"
-# AUTH_URL_SELLER = "https://auth.tiktok-shops.com/oauth/authorize" # Untuk Browser
 AUTH_URL_SELLER = "https://services.tiktokshop.com/open/authorize"
-TOKEN_URL_SERVER = "https://auth.tiktok-shops.com/api/v2/token/get" # Untuk Server-to-Server
 
 # --- HELPER FUNCTIONS ---
 
-def generate_signature(path, params, app_secret, body=None):
-    # 1. Urutkan parameter secara alfabetis (kecuali sign dan access_token)
-    keys = sorted([k for k in params.keys() if k not in ["sign", "access_token"]])
+def generate_signature(params, app_secret):
+    """
+    ✅ PERBAIKAN: Format signature TikTok Shop API v2 yang benar
+    Format: HMAC-SHA256( app_secret + key1+value1 + key2+value2 + ... + app_secret )
+    """
+    # 1. Filter parameter yang tidak ikut di-sign
+    sign_params = {k: v for k, v in params.items() 
+                   if k not in ["sign", "access_token"] and v is not None}
     
-    # 2. Gabungkan key dan value
-    param_string = "".join([f"{k}{params[k]}" for k in keys])
+    # 2. Sort parameter berdasarkan key (alfabetis)
+    sorted_keys = sorted(sign_params.keys())
     
-    # 3. Tambahkan body jika ada (untuk POST request)
-    body_string = ""
-    if body:
-        # TikTok minta body dalam bentuk raw string JSON tanpa spasi yang tidak perlu
-        body_string = json.dumps(body, separators=(',', ':'))
+    # 3. Concatenate: app_secret + key1+value1 + key2+value2 + ... + app_secret
+    sign_string = app_secret
+    for key in sorted_keys:
+        sign_string += f"{key}{sign_params[key]}"
+    sign_string += app_secret
     
-    # 4. Pola: secret + path + params + body + secret
-    base_string = f"{app_secret}{path}{param_string}{body_string}{app_secret}"
-    
-    # 5. HMAC-SHA256
+    # 4. HMAC-SHA256, uppercase hex
     signature = hmac.new(
         app_secret.encode("utf-8"),
-        base_string.encode("utf-8"),
+        sign_string.encode("utf-8"),
         hashlib.sha256
-    ).hexdigest()
+    ).hexdigest().upper()
     
     return signature
+
+
 def get_auth_url():
-    """Generate URL otorisasi TikTok Shop yang benar"""
-    # Format yang benar untuk TikTok Shop Seller Authorization
+    """✅ PERBAIKAN: Generate URL otorisasi dengan redirect_uri"""
     params = {
         "app_key": APP_KEY,
-        "state": "TiktokbroAuth"
+        "state": "TiktokbroAuth",
+        "redirect_uri": REDIRECT_URI  # ✅ TAMBAH: redirect_uri wajib
     }
     
-    # Build query string
-    query_string = "&".join([f"{k}={v}" for k, v in params.items()])
-    
-    # URL lengkap
+    query_string = urllib.parse.urlencode(params)
     return f"{AUTH_URL_SELLER}?{query_string}"
 
+
 def exchange_auth_code(auth_code):
-    """Tukar auth code dengan access token"""
-    # PASTIKAN TIDAK ADA SPASI DI URL
+    """✅ PERBAIKAN: grant_type yang benar"""
     url = f"{AUTH_URL}/api/v2/token/get"
     
     params = {
         "app_key": APP_KEY,
         "app_secret": APP_SECRET,
         "auth_code": auth_code,
-        "grant_type": "authorized_app"
+        "grant_type": "authorized_code"  # ✅ PERBAIKAN: bukan "authorized_app"
     }
     
     try:
@@ -83,6 +83,7 @@ def exchange_auth_code(auth_code):
         return response.json()
     except requests.exceptions.RequestException as e:
         return {"code": -1, "message": str(e)}
+
 
 def refresh_access_token(refresh_token):
     """Refresh token yang sudah expired"""
@@ -100,42 +101,48 @@ def refresh_access_token(refresh_token):
         return response.json()
     except Exception as e:
         return {"code": -1, "message": str(e)}
-        
-def make_tiktok_request(endpoint, access_token, shop_id=None, method="POST", body=None):
-    """Generic function untuk call TikTok Shop API dengan signature"""
-    timestamp = int(time.time())
+
+
+def make_tiktok_request(endpoint, access_token, shop_cipher=None, method="GET", body=None, **extra_params):
+    """
+    ✅ PERBAIKAN: Generic function untuk call TikTok Shop API
+    - Menggunakan shop_cipher (bukan shop_id)
+    - Parameter signature yang benar
+    """
+    timestamp = str(int(time.time()))
     
+    # Build params untuk signature
     params = {
         "app_key": APP_KEY,
         "timestamp": timestamp,
-        "access_token": access_token,
-        "timestamp": timestamp,
     }
     
-    if shop_id:
-        params["shop_id"] = shop_id
+    if shop_cipher:
+        params["shop_cipher"] = shop_cipher  # ✅ PERBAIKAN: pakai shop_cipher
     
-    if additional_params:
-        # Filter None values
-        additional_params = {k: v for k, v in additional_params.items() if v is not None}
-        params.update(additional_params)
+    # Tambahkan extra params (untuk filter, pagination, dll)
+    if extra_params:
+        params.update({k: v for k, v in extra_params.items() if v is not None})
     
-    sign = generate_signature(endpoint, params, APP_SECRET, body)
+    # Generate signature
+    sign = generate_signature(params, APP_SECRET)
     params["sign"] = sign
+    params["access_token"] = access_token  # access_token di query params, bukan header
     
     url = f"{BASE_URL}{endpoint}"
     headers = {"Content-Type": "application/json"}
     
     try:
         if method.upper() == "POST":
-            # Kirim body sebagai JSON string
-            response = requests.post(url, params=query_params, json=body, headers=headers)
+            # Untuk POST, body dikirim sebagai JSON
+            response = requests.post(url, params=params, json=body, headers=headers, timeout=30)
         else:
-            response = requests.get(url, params=query_params, headers=headers)
-            
+            response = requests.get(url, params=params, headers=headers, timeout=30)
+        
         return response.json()
     except Exception as e:
         return {"code": -1, "message": str(e)}
+
 
 # --- KONVERSI WAKTU UTC-7 (WIB) ---
 
@@ -145,16 +152,15 @@ def to_wib(utc_timestamp):
         return ""
     try:
         if isinstance(utc_timestamp, str):
-            # Coba parse string timestamp
             utc_time = datetime.fromisoformat(utc_timestamp.replace('Z', '+00:00'))
         else:
-            # Assume epoch timestamp
             utc_time = datetime.fromtimestamp(utc_timestamp, tz=timezone.utc)
         
         wib_time = utc_time + timedelta(hours=7)
         return wib_time.strftime("%Y-%m-%d %H:%M:%S")
     except:
         return str(utc_timestamp)
+
 
 def epoch_to_wib(epoch_ms):
     """Konversi epoch milliseconds ke WIB"""
@@ -167,19 +173,19 @@ def epoch_to_wib(epoch_ms):
     except:
         return ""
 
+
 # --- API FUNCTIONS ---
 
-def get_all_orders(access_token, shop_id, start_time, end_time):
+def get_all_orders(access_token, shop_cipher, start_time, end_time):
     """Ambil semua pesanan dengan pagination"""
     all_orders = []
-    page_token = None
-    max_pages = 100  # Safety limit
+    cursor = None
+    max_pages = 100
     
     for page in range(max_pages):
         endpoint = "/api/orders/search"
         
-        params = {
-            "shop_id": shop_id,
+        extra = {
             "create_time_ge": int(start_time.timestamp()),
             "create_time_lt": int(end_time.timestamp()),
             "page_size": 50,
@@ -187,149 +193,150 @@ def get_all_orders(access_token, shop_id, start_time, end_time):
             "sort_field": "create_time"
         }
         
-        if page_token:
-            params["cursor"] = page_token
+        if cursor:
+            extra["cursor"] = cursor
         
-        result = make_tiktok_request(endpoint, access_token, shop_id, params)
+        result = make_tiktok_request(endpoint, access_token, shop_cipher, **extra)
         
         if result.get("code") == 0:
             data = result.get("data", {})
             orders = data.get("order_list", [])
             all_orders.extend(orders)
             
-            page_token = data.get("next_page_token")
-            if not page_token or not orders:
+            cursor = data.get("next_page_token")
+            if not cursor or not orders:
                 break
         else:
             st.error(f"Error fetching orders: {result.get('message')}")
+            st.json(result)  # Debug
             break
     
     return all_orders
 
-def get_order_detail_batch(access_token, shop_id, order_ids):
-    """Ambil detail pesanan secara batch"""
-    all_details = []
-    
-    # TikTok API mungkin support batch atau perlu individual calls
-    # Asumsi individual calls untuk safety
-    for order_id in order_ids:
-        endpoint = "/api/orders/detail/query"
-        params = {"shop_id": shop_id, "order_id": order_id}
-        
-        result = make_tiktok_request(endpoint, access_token, shop_id, params)
-        if result.get("code") == 0:
-            all_details.append(result.get("data", {}))
-        
-        # Rate limiting protection
-        time.sleep(0.1)
-    
-    return all_details
 
-def get_settlements(access_token, shop_id, start_time, end_time):
+def get_order_detail(access_token, shop_cipher, order_id):
+    """✅ PERBAIKAN: Ambil detail 1 pesanan (bukan batch)"""
+    endpoint = "/api/orders/detail/query"
+    
+    result = make_tiktok_request(
+        endpoint, 
+        access_token, 
+        shop_cipher, 
+        order_id=order_id
+    )
+    
+    if result.get("code") == 0:
+        return result.get("data", {})
+    else:
+        return {}
+
+
+def get_settlements(access_token, shop_cipher, start_time, end_time):
     """Ambil data settlement/income"""
     all_settlements = []
-    page_token = None
+    cursor = None
     max_pages = 100
     
     for page in range(max_pages):
-        endpoint = "/api/finance/settlement/search"
+        endpoint = "/api/finance/order/settlements"  # ✅ Sesuaikan dengan docs
         
-        params = {
-            "shop_id": shop_id,
-            "start_settlement_time": int(start_time.timestamp()),
-            "end_settlement_time": int(end_time.timestamp()),
+        extra = {
+            "settlement_time_ge": int(start_time.timestamp()),
+            "settlement_time_lt": int(end_time.timestamp()),
             "page_size": 50
         }
         
-        if page_token:
-            params["cursor"] = page_token
+        if cursor:
+            extra["cursor"] = cursor
         
-        result = make_tiktok_request(endpoint, access_token, shop_id, params)
+        result = make_tiktok_request(endpoint, access_token, shop_cipher, **extra)
         
         if result.get("code") == 0:
             data = result.get("data", {})
             settlements = data.get("settlement_list", [])
             all_settlements.extend(settlements)
             
-            page_token = data.get("next_page_token")
-            if not page_token or not settlements:
+            cursor = data.get("next_page_token")
+            if not cursor or not settlements:
                 break
         else:
             st.error(f"Error fetching settlements: {result.get('message')}")
+            st.json(result)  # Debug
             break
     
     return all_settlements
 
-def get_products(access_token, shop_id):
+
+def get_products(access_token, shop_cipher):
     """Ambil semua produk"""
     all_products = []
-    page_token = None
+    cursor = None
     max_pages = 100
     
     for page in range(max_pages):
         endpoint = "/api/products/search"
         
-        params = {
-            "shop_id": shop_id,
+        extra = {
             "page_size": 50,
-            "status": 1  # Active
+            "status": 1
         }
         
-        if page_token:
-            params["cursor"] = page_token
+        if cursor:
+            extra["cursor"] = cursor
         
-        result = make_tiktok_request(endpoint, access_token, shop_id, params)
+        result = make_tiktok_request(endpoint, access_token, shop_cipher, **extra)
         
         if result.get("code") == 0:
             data = result.get("data", {})
             products = data.get("product_list", [])
             all_products.extend(products)
             
-            page_token = data.get("next_page_token")
-            if not page_token or not products:
+            cursor = data.get("next_page_token")
+            if not cursor or not products:
                 break
         else:
             st.error(f"Error fetching products: {result.get('message')}")
+            st.json(result)  # Debug
             break
     
     return all_products
 
-def get_affiliate_orders(access_token, shop_id, start_time, end_time):
+
+def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
     """Ambil data creator/affiliate orders"""
     all_orders = []
-    page_token = None
+    cursor = None
     max_pages = 100
     
     for page in range(max_pages):
-        # Endpoint affiliate mungkin berbeda, sesuaikan dengan docs terbaru
-        endpoint = "/api/affiliate/orders"
+        endpoint = "/api/affiliate/orders/search"  # ✅ Sesuaikan dengan docs
         
-        params = {
-            "shop_id": shop_id,
-            "start_time": int(start_time.timestamp()),
-            "end_time": int(end_time.timestamp()),
+        extra = {
+            "create_time_ge": int(start_time.timestamp()),
+            "create_time_lt": int(end_time.timestamp()),
             "page_size": 50
         }
         
-        if page_token:
-            params["cursor"] = page_token
+        if cursor:
+            extra["cursor"] = cursor
         
-        result = make_tiktok_request(endpoint, access_token, shop_id, params)
+        result = make_tiktok_request(endpoint, access_token, shop_cipher, **extra)
         
         if result.get("code") == 0:
             data = result.get("data", {})
             orders = data.get("order_list", [])
             all_orders.extend(orders)
             
-            page_token = data.get("next_page_token")
-            if not page_token or not orders:
+            cursor = data.get("next_page_token")
+            if not cursor or not orders:
                 break
         else:
-            # Affiliate API mungkin memerlukan scope berbeda
             st.warning(f"Affiliate API: {result.get('message')}")
+            st.json(result)  # Debug
             break
     
     return all_orders
+
 
 # --- FORMATTING FUNCTIONS ---
 
@@ -337,11 +344,13 @@ def format_orders_excel(orders_data, order_details):
     """Format data pesanan sesuai kolom yang diminta"""
     rows = []
     
+    # Buat dictionary untuk lookup detail
+    details_dict = {d.get("order_id"): d for d in order_details if d}
+    
     for order in orders_data:
         order_id = order.get("order_id")
-        detail = next((d for d in order_details if d.get("order_id") == order_id), {})
+        detail = details_dict.get(order_id, {})
         
-        # Extract info dasar
         order_status = order.get("order_status", "")
         order_substatus = order.get("order_sub_status", "")
         
@@ -353,21 +362,17 @@ def format_orders_excel(orders_data, order_details):
         delivered_time = epoch_to_wib(order.get("delivered_time"))
         cancelled_time = epoch_to_wib(order.get("cancelled_time"))
         
-        # Info pembatalan
         cancel_by = order.get("cancel_user", "")
         cancel_reason = order.get("cancel_reason", "")
         
-        # Info pembeli & pengiriman
         buyer_info = detail.get("buyer_info", {})
         recipient_info = detail.get("recipient_info", {})
         payment_info = detail.get("payment_info", {})
         shipping_info = detail.get("shipping_info", {})
         
-        # Loop untuk setiap item/SKU dalam pesanan
         items = detail.get("item_list", [])
         
         if not items:
-            # Jika tidak ada detail item, buat 1 row dengan info order saja
             rows.append({
                 "Order ID": order_id,
                 "Order Status": order_status,
@@ -503,12 +508,12 @@ def format_orders_excel(orders_data, order_details):
     
     return pd.DataFrame(rows)
 
+
 def format_income_excel(settlements_data):
-    """Format data income/settlement sesuai kolom yang diminta"""
+    """Format data income/settlement"""
     rows = []
     
     for settlement in settlements_data:
-        # Konversi waktu ke WIB
         order_created_time = epoch_to_wib(settlement.get("order_create_time"))
         order_settled_time = epoch_to_wib(settlement.get("settlement_time"))
         
@@ -581,12 +586,12 @@ def format_income_excel(settlements_data):
     
     return pd.DataFrame(rows)
 
+
 def format_product_excel(products_data):
     """Format data produk untuk iklan"""
     rows = []
     
     for product in products_data:
-        # Hitung metrik iklan jika tersedia
         sales_data = product.get("sales_data", {})
         ad_data = product.get("ad_data", {})
         
@@ -610,12 +615,12 @@ def format_product_excel(products_data):
     
     return pd.DataFrame(rows)
 
+
 def format_creator_orders_excel(affiliate_orders):
     """Format data creator/affiliate orders"""
     rows = []
     
     for order in affiliate_orders:
-        # Konversi waktu ke WIB
         created_time = epoch_to_wib(order.get("create_time"))
         paid_time = epoch_to_wib(order.get("paid_time"))
         rts_time = epoch_to_wib(order.get("rts_time"))
@@ -664,6 +669,7 @@ def format_creator_orders_excel(affiliate_orders):
     
     return pd.DataFrame(rows)
 
+
 def to_excel_download(df, filename):
     """Convert DataFrame ke Excel download"""
     output = BytesIO()
@@ -672,13 +678,15 @@ def to_excel_download(df, filename):
     output.seek(0)
     return output
 
+
 # --- DATABASE FUNCTIONS ---
 
 def save_token_to_db(token_data, seller_name="Unknown"):
-    """Simpan token ke Supabase"""
+    """✅ PERBAIKAN: Simpan token dengan shop_cipher"""
     try:
         data = {
             "shop_id": token_data.get("seller_id") or token_data.get("shop_id"),
+            "shop_cipher": token_data.get("shop_cipher"),  # ✅ TAMBAH: simpan shop_cipher
             "shop_name": seller_name,
             "access_token": token_data["access_token"],
             "refresh_token": token_data.get("refresh_token"),
@@ -693,6 +701,7 @@ def save_token_to_db(token_data, seller_name="Unknown"):
         st.error(f"Database error: {str(e)}")
         return None
 
+
 def get_shop_tokens():
     """Ambil semua toko yang tersimpan"""
     try:
@@ -701,6 +710,7 @@ def get_shop_tokens():
     except Exception as e:
         st.error(f"Error fetching shops: {str(e)}")
         return []
+
 
 # --- STREAMLIT UI ---
 
@@ -803,8 +813,9 @@ with st.sidebar:
 
 # Main Content
 if selected_shop:
+    # ✅ PERBAIKAN: Gunakan shop_cipher, bukan shop_id
     access_token = selected_shop['access_token']
-    shop_id = selected_shop['shop_id']
+    shop_cipher = selected_shop.get('shop_cipher', selected_shop['shop_id'])  # Fallback ke shop_id
     
     tab1, tab2, tab3, tab4 = st.tabs([
         "💰 Income/Settlement", 
@@ -820,19 +831,18 @@ if selected_shop:
         
         if st.button("🔄 Tarik & Download Excel", key="btn_income", type="primary"):
             with st.spinner("Mengambil data keuangan..."):
-                settlements = get_settlements(access_token, shop_id, start_date_utc, end_date_utc)
+                settlements = get_settlements(access_token, shop_cipher, start_date_utc, end_date_utc)
                 
                 if settlements:
                     df = format_income_excel(settlements)
                     st.success(f"✅ Ditemukan {len(settlements)} transaksi")
                     st.dataframe(df.head(10), use_container_width=True)
                     
-                    # Download Excel
                     excel_file = to_excel_download(df, "income")
                     st.download_button(
                         label="📥 Download Excel Income",
                         data=excel_file,
-                        file_name=f"Income_{shop_id}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+                        file_name=f"Income_{shop_cipher}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 else:
@@ -845,34 +855,30 @@ if selected_shop:
         
         if st.button("🔄 Tarik & Download Excel", key="btn_orders", type="primary"):
             with st.spinner("Mengambil data pesanan (ini mungkin memakan waktu)..."):
-                # Step 1: Get order list
-                orders = get_all_orders(access_token, shop_id, start_date_utc, end_date_utc)
+                orders = get_all_orders(access_token, shop_cipher, start_date_utc, end_date_utc)
                 
                 if orders:
                     st.info(f"📋 Ditemukan {len(orders)} pesanan, mengambil detail...")
                     
-                    # Step 2: Get details for each order
                     order_ids = [o.get("order_id") for o in orders]
                     progress_bar = st.progress(0)
                     
                     order_details = []
                     for i, order_id in enumerate(order_ids):
-                        detail = get_order_detail_batch(access_token, shop_id, [order_id])
-                        order_details.extend(detail)
+                        detail = get_order_detail(access_token, shop_cipher, order_id)
+                        order_details.append(detail)
                         progress_bar.progress((i + 1) / len(order_ids))
-                        time.sleep(0.05)  # Rate limiting
+                        time.sleep(0.05)
                     
-                    # Step 3: Format to Excel
                     df = format_orders_excel(orders, order_details)
                     st.success(f"✅ Berhasil memproses {len(df)} baris data")
                     st.dataframe(df.head(10), use_container_width=True)
                     
-                    # Download Excel
                     excel_file = to_excel_download(df, "orders")
                     st.download_button(
                         label="📥 Download Excel Pesanan",
                         data=excel_file,
-                        file_name=f"Semua_Pesanan_{shop_id}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+                        file_name=f"Semua_Pesanan_{shop_cipher}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 else:
@@ -885,7 +891,7 @@ if selected_shop:
         
         if st.button("🔄 Tarik & Download Excel", key="btn_creator", type="primary"):
             with st.spinner("Mengambil data affiliate..."):
-                affiliate_orders = get_affiliate_orders(access_token, shop_id, start_date_utc, end_date_utc)
+                affiliate_orders = get_affiliate_orders(access_token, shop_cipher, start_date_utc, end_date_utc)
                 
                 if affiliate_orders:
                     df = format_creator_orders_excel(affiliate_orders)
@@ -896,7 +902,7 @@ if selected_shop:
                     st.download_button(
                         label="📥 Download Excel Creator Orders",
                         data=excel_file,
-                        file_name=f"Creator_Order_All_{shop_id}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+                        file_name=f"Creator_Order_All_{shop_cipher}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 else:
@@ -908,7 +914,7 @@ if selected_shop:
         
         if st.button("🔄 Tarik & Download Excel", key="btn_products", type="primary"):
             with st.spinner("Mengambil data produk..."):
-                products = get_products(access_token, shop_id)
+                products = get_products(access_token, shop_cipher)
                 
                 if products:
                     df = format_product_excel(products)
@@ -919,7 +925,7 @@ if selected_shop:
                     st.download_button(
                         label="📥 Download Excel Produk",
                         data=excel_file,
-                        file_name=f"Product_Data_Iklan_{shop_id}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        file_name=f"Product_Data_Iklan_{shop_cipher}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 else:
