@@ -67,20 +67,24 @@ def get_auth_url():
 
 
 def exchange_auth_code(auth_code):
-    """✅ PERBAIKAN: grant_type yang benar"""
     url = f"{AUTH_URL}/api/v2/token/get"
     
     params = {
         "app_key": APP_KEY,
         "app_secret": APP_SECRET,
         "auth_code": auth_code,
-        "grant_type": "authorized_code"  # ✅ PERBAIKAN: bukan "authorized_app"
+        "grant_type": "authorized_code"  # ✅ Bukan "authorized_app"
     }
     
     try:
         response = requests.get(url, params=params, timeout=30)
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        
+        # Debug log
+        print(f"Token response: {result}")
+        return result
+        
     except requests.exceptions.RequestException as e:
         return {"code": -1, "message": str(e)}
 
@@ -682,13 +686,12 @@ def to_excel_download(df, filename):
 # --- DATABASE FUNCTIONS ---
 
 def save_token_to_db(token_data, seller_name="Unknown"):
-    """✅ PERBAIKAN: Simpan token dengan shop_cipher"""
     try:
         data = {
-            "shop_id": token_data.get("seller_id") or token_data.get("shop_id"),
-            "shop_cipher": token_data.get("shop_cipher"),  # ✅ TAMBAH: simpan shop_cipher
+            "shop_id": token_data.get("seller_id") or token_data.get("shop_id") or token_data.get("user_id"),
+            "shop_cipher": token_data.get("shop_cipher") or token_data.get("shop_id"),
             "shop_name": seller_name,
-            "access_token": token_data["access_token"],
+            "access_token": token_data.get("access_token"),
             "refresh_token": token_data.get("refresh_token"),
             "access_token_expire_in": token_data.get("access_token_expire_in", 86400),
             "refresh_token_expire_in": token_data.get("refresh_token_expire_in", 2592000),
@@ -696,11 +699,10 @@ def save_token_to_db(token_data, seller_name="Unknown"):
         }
         
         result = supabase.table("tiktok_shops").upsert(data).execute()
-        return result
+        return result  # ✅ Return hasil supaya bisa dicek
     except Exception as e:
         st.error(f"Database error: {str(e)}")
         return None
-
 
 def get_shop_tokens():
     """Ambil semua toko yang tersimpan"""
@@ -718,27 +720,35 @@ st.set_page_config(page_title="Tiktokbro - TikTok Shop Automation", layout="wide
 st.title("🚀 Tiktokbro Data Extractor")
 st.markdown("### Integrasi TikTok Shop Seller API - WIB Timezone (UTC+7)")
 
-# Handle OAuth Callback
 query_params = st.query_params
-if "code" in query_params:
-    auth_code = query_params["code"]
+auth_code = query_params.get("code")
+if auth_code:
+    # Pastikan auth_code adalah string (bukan QueryParams object)
+    auth_code = str(auth_code)
     
     with st.spinner("Menghubungkan ke TikTok Shop..."):
         token_response = exchange_auth_code(auth_code)
         
-        if token_response.get("code") == 0:
-            data = token_response["data"]
-            seller_name = data.get("seller_name", "Toko Baru")
-            save_token_to_db(data, seller_name)
-            st.success(f"✅ Toko **{seller_name}** berhasil dihubungkan!")
-            st.balloons()
+        # Debug: tampilkan response untuk debugging
+        if token_response.get("code") != 0:
+            st.error(f"❌ Gagal tukar auth code: {token_response.get('message', 'Unknown error')}")
+            st.json(token_response)
         else:
-            st.error(f"❌ Gagal: {token_response.get('message', 'Unknown error')}")
-            st.json(token_response)  # Debug
-    
-    st.query_params.clear()
-    st.rerun()
-
+            data = token_response.get("data", {})
+            
+            # Debug: tampilkan data yang diterima
+            st.write("Debug — Data token:", data)
+            
+            seller_name = data.get("seller_name", "Toko Baru")
+            
+            # Simpan ke database
+            result = save_token_to_db(data, seller_name)
+            
+            if result:
+                st.success(f"✅ Toko **{seller_name}** berhasil dihubungkan!")
+                st.balloons()
+            else:
+                st.error("❌ Gagal menyimpan ke database")
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Konfigurasi Toko")
