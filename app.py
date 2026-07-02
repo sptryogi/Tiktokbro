@@ -107,6 +107,36 @@ def refresh_access_token(refresh_token: str) -> dict:
         return {"code": -1, "message": str(e)}
 
 
+def get_authorized_shops(access_token: str) -> list:
+    """
+    Setelah dapat access_token, panggil endpoint ini untuk mendapatkan
+    shop_id dan shop_cipher dari semua toko yang diotorisasi seller.
+    Endpoint: GET /api/v2/seller/permissions
+
+    Response berisi list authorized_shops:
+      [{"shop_id": "...", "shop_cipher": "...", "shop_name": "...", ...}, ...]
+    """
+    timestamp = str(int(time.time()))
+    params = {
+        "app_key":      APP_KEY,
+        "timestamp":    timestamp,
+    }
+    params["sign"]         = generate_signature(params, APP_SECRET)
+    params["access_token"] = access_token
+
+    url = f"{BASE_URL}/api/v2/seller/permissions"
+    try:
+        resp = requests.get(url, params=params, timeout=30)
+        result = resp.json()
+        st.write("🔍 Debug authorized shops response:", result)
+        if result.get("code") == 0:
+            return result.get("data", {}).get("authorized_shops", [])
+        return []
+    except Exception as e:
+        st.warning(f"Gagal ambil authorized shops: {e}")
+        return []
+
+
 # ─────────────────────────────────────────────
 # GENERIC API REQUEST
 # ─────────────────────────────────────────────
@@ -559,47 +589,37 @@ def to_excel_download(df: pd.DataFrame) -> BytesIO:
 # ─────────────────────────────────────────────
 # DATABASE
 # ─────────────────────────────────────────────
-def save_token_to_db(token_data: dict, seller_name: str = "Unknown"):
+def save_token_to_db(token_data: dict, shop_info: dict, seller_name: str = "Unknown"):
     """
-    FIX: Petakan field dari response TikTok token ke kolom Supabase dengan benar.
-    Response TikTok v2 token berisi:
-      - access_token, refresh_token, access_token_expire_in, refresh_token_expire_in
-      - seller_id (bisa berisi shop_id), seller_name, shop_cipher (list shops)
+    Simpan token ke Supabase.
+
+    token_data  = response dari exchange_auth_code / refresh_access_token
+    shop_info   = satu entry dari get_authorized_shops()
+                  berisi shop_id, shop_cipher, shop_name (atau shop_nickname)
+
+    Kolom Supabase yang diperlukan:
+      shop_id TEXT PRIMARY KEY, shop_cipher TEXT, shop_name TEXT,
+      access_token TEXT, refresh_token TEXT,
+      access_token_expire_in INT, refresh_token_expire_in INT,
+      updated_at TIMESTAMPTZ
     """
     try:
-        # shop_id — coba beberapa field yang mungkin ada di response
-        shop_id = (
-            token_data.get("seller_id")
-            or token_data.get("shop_id")
-            or token_data.get("user_id")
-            or "unknown"
-        )
-
-        # shop_cipher — TikTok v2 kadang kirim sebagai list of authorized_shops
-        shop_cipher = None
-        authorized_shops = token_data.get("authorized_shops", [])
-        if authorized_shops and isinstance(authorized_shops, list):
-            # Ambil cipher toko pertama
-            shop_cipher = authorized_shops[0].get("shop_cipher") or authorized_shops[0].get("shop_id")
-        if not shop_cipher:
-            shop_cipher = token_data.get("shop_cipher") or shop_id
-
-        # seller_name dari response jika ada
-        resolved_name = token_data.get("seller_name") or seller_name
+        shop_id     = str(shop_info.get("shop_id") or shop_info.get("shop_id") or "unknown")
+        shop_cipher = str(shop_info.get("shop_cipher") or shop_id)
+        shop_name   = shop_info.get("shop_name") or shop_info.get("shop_nickname") or seller_name
 
         data = {
-            "shop_id":                   str(shop_id),
-            "shop_cipher":               str(shop_cipher),
-            "shop_name":                 resolved_name,
-            "access_token":              token_data.get("access_token", ""),
-            "refresh_token":             token_data.get("refresh_token", ""),
-            "access_token_expire_in":    token_data.get("access_token_expire_in", 86400),
-            "refresh_token_expire_in":   token_data.get("refresh_token_expire_in", 2592000),
-            "updated_at":                datetime.now(timezone.utc).isoformat(),
+            "shop_id":                 shop_id,
+            "shop_cipher":             shop_cipher,
+            "shop_name":               shop_name,
+            "access_token":            token_data.get("access_token", ""),
+            "refresh_token":           token_data.get("refresh_token", ""),
+            "access_token_expire_in":  token_data.get("access_token_expire_in", 86400),
+            "refresh_token_expire_in": token_data.get("refresh_token_expire_in", 2592000),
+            "updated_at":              datetime.now(timezone.utc).isoformat(),
         }
 
-        # Debug: tampilkan data yang akan disimpan
-        st.write("🔍 Debug data yang akan disimpan ke DB:", data)
+        st.write(f"🔍 Debug simpan toko **{shop_name}**:", data)
 
         result = supabase.table("tiktok_shops").upsert(data, on_conflict="shop_id").execute()
         return result
@@ -620,17 +640,21 @@ def get_shop_tokens():
 def try_refresh_if_expired(shop: dict) -> dict:
     """Refresh token jika hampir expired, kembalikan shop dengan token baru."""
     try:
-        updated_at  = datetime.fromisoformat(shop["updated_at"].replace("Z", "+00:00"))
-        expires_in  = shop.get("access_token_expire_in", 86400)
-        expiry      = updated_at + timedelta(seconds=expires_in)
-        now         = datetime.now(timezone.utc)
+        updated_at = datetime.fromisoformat(shop["updated_at"].replace("Z", "+00:00"))
+        expires_in = shop.get("access_token_expire_in", 86400)
+        expiry     = updated_at + timedelta(seconds=expires_in)
+        now        = datetime.now(timezone.utc)
 
-        # Refresh kalau sisa < 10 menit
         if now >= expiry - timedelta(minutes=10):
             result = refresh_access_token(shop["refresh_token"])
             if result.get("code") == 0:
-                new_data = result.get("data", {})
-                save_token_to_db(new_data, shop["shop_name"])
+                new_data  = result.get("data", {})
+                shop_info = {
+                    "shop_id":     shop["shop_id"],
+                    "shop_cipher": shop["shop_cipher"],
+                    "shop_name":   shop["shop_name"],
+                }
+                save_token_to_db(new_data, shop_info, shop["shop_name"])
                 shop["access_token"] = new_data.get("access_token", shop["access_token"])
                 st.success("🔄 Token berhasil diperbarui otomatis.")
     except Exception:
@@ -651,6 +675,8 @@ auth_code = query_params.get("code")
 
 if auth_code:
     auth_code = str(auth_code)
+
+    # STEP 1: Tukar auth_code → access_token
     with st.spinner("Menukar kode otorisasi dengan access token..."):
         token_response = exchange_auth_code(auth_code)
 
@@ -658,13 +684,36 @@ if auth_code:
         st.error(f"❌ Gagal tukar auth code: {token_response.get('message', 'Unknown error')}")
         st.json(token_response)
     else:
-        data        = token_response.get("data", {})
-        seller_name = data.get("seller_name", "Toko Baru")
-        result      = save_token_to_db(data, seller_name)
+        token_data  = token_response.get("data", {})
+        seller_name = token_data.get("seller_name", "Toko Baru")
+        access_token_new = token_data.get("access_token", "")
+
+        # STEP 2: Ambil daftar toko (shop_id + shop_cipher) yang diotorisasi
+        # Karena response token TIDAK berisi shop_cipher — harus fetch terpisah
+        with st.spinner("Mengambil daftar toko yang diotorisasi..."):
+            authorized_shops = get_authorized_shops(access_token_new)
+
+        if not authorized_shops:
+            st.warning("⚠️ Tidak bisa ambil data toko. Menyimpan dengan ID sementara...")
+            # Fallback: simpan dengan open_id sebagai shop_id, cipher kosong
+            fallback_shop_info = {
+                "shop_id":     token_data.get("open_id", "unknown"),
+                "shop_cipher": token_data.get("open_id", "unknown"),
+                "shop_name":   seller_name,
+            }
+            result = save_token_to_db(token_data, fallback_shop_info, seller_name)
+        else:
+            # Simpan semua toko yang diotorisasi (biasanya hanya 1)
+            results = []
+            for shop_info in authorized_shops:
+                r = save_token_to_db(token_data, shop_info, seller_name)
+                results.append(r)
+            result = any(r is not None for r in results)
+
         if result:
-            st.success(f"✅ Toko **{seller_name}** berhasil dihubungkan!")
+            total = len(authorized_shops) if authorized_shops else 1
+            st.success(f"✅ **{seller_name}** berhasil dihubungkan! ({total} toko tersimpan)")
             st.balloons()
-            # Hapus query param agar tidak re-trigger saat refresh
             st.query_params.clear()
         else:
             st.error("❌ Gagal menyimpan ke database. Cek debug di atas.")
