@@ -115,7 +115,7 @@ def get_authorized_shops(access_token: str) -> list:
         "app_key":      APP_KEY,
         "timestamp":    timestamp,
     }
-    params["sign"]         = generate_signature(params, APP_SECRET, body if method.upper() == "POST" else None)
+    params["sign"]         = generate_signature(params, APP_SECRET, None)
     params["access_token"] = access_token
 
     url = f"{BASE_URL}/api/v2/seller/permissions"
@@ -152,9 +152,16 @@ def make_tiktok_request(
     for k, v in extra_params.items():
         if v is not None:
             params[k] = v
-    params["sign"]         = generate_signature(params, APP_SECRET)
-    params["access_token"] = access_token
-    headers = {"Content-Type": "application/json"}
+    
+    # Generate signature TANPA access_token di params
+    params["sign"] = generate_signature(params, APP_SECRET, body if method.upper() == "POST" else None)
+    
+    # Token di HEADER, bukan query param
+    headers = {
+        "Content-Type": "application/json",
+        "x-tts-access-token": access_token,
+    }
+    
     url = f"{BASE_URL}{endpoint}"
     try:
         if method.upper() == "POST":
@@ -209,10 +216,10 @@ def get_all_orders(access_token, shop_cipher, start_time, end_time):
             extra["cursor"] = cursor
 
         result = make_tiktok_request(
-            "/order/202309/orders/search",
+            "/api/v2/order/orders/search",
             access_token, shop_cipher,
             method="POST",
-            body=extra   # filter dikirim sebagai JSON body, bukan query
+            body=extra
         )
 
         if result.get("code") == 0:
@@ -231,9 +238,9 @@ def get_all_orders(access_token, shop_cipher, start_time, end_time):
 
 def get_order_detail(access_token, shop_cipher, order_id):
     result = make_tiktok_request(
-        "/order/202309/orders",
+        "/api/v2/order/orders/detail",
         access_token, shop_cipher,
-        ids=order_id   # plural 'ids', bukan 'order_id'
+        order_id=order_id
     )
     return result.get("data", {}) if result.get("code") == 0 else {}
 
@@ -273,11 +280,12 @@ def get_products(access_token, shop_cipher):
             extra["cursor"] = cursor
 
         result = make_tiktok_request(
-            "/product/202309/products/search",
+            "/api/v2/product/products/search",
             access_token, shop_cipher,
             method="POST",
             body=extra
         )
+        
         if result.get("code") == 0:
             data     = result.get("data", {})
             products = data.get("product_list", [])
