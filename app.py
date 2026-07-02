@@ -149,25 +149,22 @@ def make_tiktok_request(
     **extra_params,
 ) -> dict:
     timestamp = str(int(time.time()))
-
     params = {
         "app_key":   APP_KEY,
         "timestamp": timestamp,
     }
     if shop_cipher:
         params["shop_cipher"] = shop_cipher
-
-    # Tambah extra params (filter, pagination, dll) — skip None
     for k, v in extra_params.items():
         if v is not None:
             params[k] = v
-
-    params["sign"]         = generate_signature(params, APP_SECRET)
-    params["access_token"] = access_token   # access_token di query, bukan header
-
-    url     = f"{BASE_URL}{endpoint}"
-    headers = {"Content-Type": "application/json"}
-
+    params["sign"] = generate_signature(params, APP_SECRET)
+    # FIX: access_token di HEADER, bukan query params
+    headers = {
+        "Content-Type":    "application/json",
+        "x-tts-access-token": access_token,
+    }
+    url = f"{BASE_URL}{endpoint}"
     try:
         if method.upper() == "POST":
             resp = requests.post(url, params=params, json=body, headers=headers, timeout=30)
@@ -220,7 +217,12 @@ def get_all_orders(access_token, shop_cipher, start_time, end_time):
         if cursor:
             extra["cursor"] = cursor
 
-        result = make_tiktok_request("/api/orders/search", access_token, shop_cipher, **extra)
+        result = make_tiktok_request(
+            "/order/202309/orders/search",
+            access_token, shop_cipher,
+            method="POST",
+            body=extra   # filter dikirim sebagai JSON body, bukan query
+        )
 
         if result.get("code") == 0:
             data   = result.get("data", {})
@@ -238,10 +240,9 @@ def get_all_orders(access_token, shop_cipher, start_time, end_time):
 
 def get_order_detail(access_token, shop_cipher, order_id):
     result = make_tiktok_request(
-        "/api/orders/detail/query",
-        access_token,
-        shop_cipher,
-        order_id=order_id,
+        "/order/202309/orders",
+        access_token, shop_cipher,
+        ids=order_id   # plural 'ids', bukan 'order_id'
     )
     return result.get("data", {}) if result.get("code") == 0 else {}
 
@@ -258,7 +259,10 @@ def get_settlements(access_token, shop_cipher, start_time, end_time):
             extra["cursor"] = cursor
 
         result = make_tiktok_request(
-            "/api/finance/order/settlements", access_token, shop_cipher, **extra
+            "/finance/202309/settlements",
+            access_token, shop_cipher,
+            method="POST",
+            body=extra
         )
         if result.get("code") == 0:
             data        = result.get("data", {})
@@ -282,7 +286,10 @@ def get_products(access_token, shop_cipher):
             extra["cursor"] = cursor
 
         result = make_tiktok_request(
-            "/api/products/search", access_token, shop_cipher, **extra
+            "/product/202309/products/search",
+            access_token, shop_cipher,
+            method="POST",
+            body=extra
         )
         if result.get("code") == 0:
             data     = result.get("data", {})
@@ -310,7 +317,9 @@ def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
             extra["cursor"] = cursor
 
         result = make_tiktok_request(
-            "/api/affiliate/orders/search", access_token, shop_cipher, **extra
+            "/affiliate/202309/orders",
+            access_token, shop_cipher,
+            **extra   # affiliate pakai GET + query params
         )
         if result.get("code") == 0:
             data   = result.get("data", {})
