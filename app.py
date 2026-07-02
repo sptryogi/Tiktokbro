@@ -29,30 +29,24 @@ AUTH_URL_SELLER = "https://services.tiktokshop.com/open/authorize"
 # ─────────────────────────────────────────────
 # SIGNATURE
 # ─────────────────────────────────────────────
-def generate_signature(params: dict, app_secret: str) -> str:
-    """
-    TikTok Shop API v2 signature:
-    HMAC-SHA256( app_secret + sorted(key+value ...) + app_secret )
-    """
+def generate_signature(params: dict, app_secret: str, body: dict = None) -> str:
+    import json as _json
     exclude = {"sign", "access_token"}
     sign_params = {k: v for k, v in params.items()
                    if k not in exclude and v is not None}
-
     sorted_keys = sorted(sign_params.keys())
-
     sign_string = app_secret
     for key in sorted_keys:
         sign_string += f"{key}{sign_params[key]}"
+    # Jika ada body (POST), tambahkan JSON string body ke sign_string
+    if body:
+        sign_string += _json.dumps(body, separators=(",", ":"), ensure_ascii=False)
     sign_string += app_secret
-
-    # FIX: hmac.new tidak ada — yang benar adalah hmac.new() versi Python
-    # Python's hmac module: hmac.new(key_bytes, msg_bytes, digestmod)
     signature = hmac.new(
         app_secret.encode("utf-8"),
         sign_string.encode("utf-8"),
         hashlib.sha256
     ).hexdigest().upper()
-
     return signature
 
 
@@ -121,7 +115,7 @@ def get_authorized_shops(access_token: str) -> list:
         "app_key":      APP_KEY,
         "timestamp":    timestamp,
     }
-    params["sign"]         = generate_signature(params, APP_SECRET)
+    params["sign"]         = generate_signature(params, APP_SECRET, body if method.upper() == "POST" else None)
     params["access_token"] = access_token
 
     url = f"{BASE_URL}/api/v2/seller/permissions"
@@ -158,12 +152,9 @@ def make_tiktok_request(
     for k, v in extra_params.items():
         if v is not None:
             params[k] = v
-    params["sign"] = generate_signature(params, APP_SECRET)
-    # FIX: access_token di HEADER, bukan query params
-    headers = {
-        "Content-Type":    "application/json",
-        "x-tts-access-token": access_token,
-    }
+    params["sign"]         = generate_signature(params, APP_SECRET)
+    params["access_token"] = access_token
+    headers = {"Content-Type": "application/json"}
     url = f"{BASE_URL}{endpoint}"
     try:
         if method.upper() == "POST":
@@ -258,12 +249,8 @@ def get_settlements(access_token, shop_cipher, start_time, end_time):
         if cursor:
             extra["cursor"] = cursor
 
-        result = make_tiktok_request(
-            "/finance/202309/settlements",
-            access_token, shop_cipher,
-            method="POST",
-            body=extra
-        )
+        result = make_tiktok_request("/finance/202309/settlements", access_token, shop_cipher, **extra)
+        
         if result.get("code") == 0:
             data        = result.get("data", {})
             settlements = data.get("settlement_list", [])
@@ -316,11 +303,7 @@ def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
         if cursor:
             extra["cursor"] = cursor
 
-        result = make_tiktok_request(
-            "/affiliate/202309/orders",
-            access_token, shop_cipher,
-            **extra   # affiliate pakai GET + query params
-        )
+        result = make_tiktok_request("/affiliate/202309/orders/search", access_token, shop_cipher, **extra)
         if result.get("code") == 0:
             data   = result.get("data", {})
             orders = data.get("order_list", [])
@@ -747,16 +730,24 @@ with st.sidebar:
     st.subheader("📅 Filter Waktu (WIB)")
     time_preset = st.radio("Rentang", ["Kemarin", "7 Hari", "30 Hari", "Custom"], horizontal=True)
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)  # UTC aktual
+
+    # Untuk "Kemarin" dalam WIB:
     if time_preset == "Kemarin":
-        start_date = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        end_date   = start_date + timedelta(days=1)
+        now_wib = now + timedelta(hours=7)  # konversi ke WIB dulu
+        start_wib = now_wib.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        end_wib   = start_wib + timedelta(days=1)
+        start_date = start_wib  # tampil ke user dalam WIB
+        end_date   = end_wib
     elif time_preset == "7 Hari":
-        start_date = now - timedelta(days=7)
-        end_date   = now
+        now_wib = now + timedelta(hours=7)
+        start_date = now_wib - timedelta(days=7)
+        end_date   = now_wib
     elif time_preset == "30 Hari":
-        start_date = now - timedelta(days=30)
-        end_date   = now
+        now_wib = now + timedelta(hours=7)
+        start_date = now_wib - timedelta(days=30)
+        end_date   = now_wib
+    
     else:
         col1, col2 = st.columns(2)
         with col1:
