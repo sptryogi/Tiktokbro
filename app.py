@@ -153,14 +153,18 @@ def make_tiktok_request(
         if v is not None:
             params[k] = v
     
-    # Generate signature TANPA access_token di params
+    # Generate signature
     params["sign"] = generate_signature(params, APP_SECRET, body if method.upper() == "POST" else None)
     
-    # Token di HEADER, bukan query param
     headers = {
         "Content-Type": "application/json",
-        "x-tts-access-token": access_token,
     }
+    
+    # FIX #1: Routing peletakan token berdasarkan versi endpoint
+    if "/api/v2/" in endpoint:
+        params["access_token"] = access_token
+    else:
+        headers["x-tts-access-token"] = access_token
     
     url = f"{BASE_URL}{endpoint}"
     try:
@@ -256,7 +260,14 @@ def get_settlements(access_token, shop_cipher, start_time, end_time):
         if cursor:
             extra["cursor"] = cursor
 
-        result = make_tiktok_request("/finance/202309/settlements", access_token, shop_cipher, **extra)
+        # FIX #2: Tambahkan /search pada endpoint dan gunakan method="POST"
+        result = make_tiktok_request(
+            "/finance/202309/settlements/search", 
+            access_token, 
+            shop_cipher, 
+            method="POST", 
+            body=extra
+        )
         
         if result.get("code") == 0:
             data        = result.get("data", {})
@@ -311,7 +322,15 @@ def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
         if cursor:
             extra["cursor"] = cursor
 
-        result = make_tiktok_request("/affiliate/202309/orders/search", access_token, shop_cipher, **extra)
+        # FIX #3: Tambahkan method="POST" dan parameter dilempar ke body
+        result = make_tiktok_request(
+            "/affiliate/202309/orders/search", 
+            access_token, 
+            shop_cipher, 
+            method="POST",
+            body=extra
+        )
+        
         if result.get("code") == 0:
             data   = result.get("data", {})
             orders = data.get("order_list", [])
