@@ -146,6 +146,7 @@ def make_tiktok_request(
     params = {
         "app_key":   APP_KEY,
         "timestamp": timestamp,
+        "access_token": access_token,  # FIX: Token WAJIB di URL params
     }
     if shop_cipher:
         params["shop_cipher"] = shop_cipher
@@ -153,18 +154,13 @@ def make_tiktok_request(
         if v is not None:
             params[k] = v
     
-    # Generate signature
+    # Generate signature (fungsi generate_signature bawaan Anda sudah benar dengan mengecualikan access_token)
     params["sign"] = generate_signature(params, APP_SECRET, body if method.upper() == "POST" else None)
     
     headers = {
         "Content-Type": "application/json",
+        # Hapus "x-tts-access-token" karena sudah ditolak oleh API
     }
-    
-    # FIX #1: Routing peletakan token berdasarkan versi endpoint
-    if "/api/v2/" in endpoint:
-        params["access_token"] = access_token
-    else:
-        headers["x-tts-access-token"] = access_token
     
     url = f"{BASE_URL}{endpoint}"
     try:
@@ -260,9 +256,9 @@ def get_settlements(access_token, shop_cipher, start_time, end_time):
         if cursor:
             extra["cursor"] = cursor
 
-        # FIX #2: Tambahkan /search pada endpoint dan gunakan method="POST"
+        # FIX: Path resmi TikTok wajib menggunakan /api/v2/
         result = make_tiktok_request(
-            "/finance/202309/settlements/search", 
+            "/api/v2/finance/settlements/search", 
             access_token, 
             shop_cipher, 
             method="POST", 
@@ -322,9 +318,9 @@ def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
         if cursor:
             extra["cursor"] = cursor
 
-        # FIX #3: Tambahkan method="POST" dan parameter dilempar ke body
+        # FIX: Path resmi TikTok wajib menggunakan /api/v2/
         result = make_tiktok_request(
-            "/affiliate/202309/orders/search", 
+            "/api/v2/affiliate/orders/search", 
             access_token, 
             shop_cipher, 
             method="POST",
