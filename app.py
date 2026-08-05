@@ -10,6 +10,32 @@ import json
 from io import BytesIO
 import urllib.parse
 
+# =================================================================
+# PERUBAHAN UTAMA DI FILE INI (ringkasan):
+# 1. generate_signature() sekarang menyertakan REQUEST PATH — ini akar
+#    masalah kenapa semua API data gagal padahal otorisasi sukses.
+#    Tanpa path, signature-nya selalu invalid. Hasil hash juga dibuat
+#    lowercase (bukan .upper()) sesuai contoh resmi TikTok.
+# 2. Semua endpoint lama /api/v2/... diganti ke skema versi-tanggal
+#    yang berlaku sekarang: /authorization/202309/.., /order/202309/..,
+#    /product/202309/.., /finance/202309/.., /affiliate_seller/202405/..
+# 3. Parameter pagination/sort (page_size, sort_field, sort_order,
+#    page_token) sekarang dikirim sebagai QUERY params, bukan di body
+#    JSON — hanya kriteria filter asli yang masuk body.
+# 4. get_order_detail (loop 1 order per request ke endpoint yang sudah
+#    tidak ada) diganti get_order_details_batch (banyak id sekaligus).
+# 5. "Settlements search" sudah tidak ada di API TikTok Shop sekarang.
+#    Diganti alur "Statements" (periode) -> "Statement Transactions"
+#    (rincian per order di dalam periode itu). Semua nama kolom laporan
+#    income yang lama saya PERTAHANKAN, tapi sebagian nilainya sekarang
+#    hasil SUM dari sku_transactions di dalam 1 order (supaya grain-nya
+#    tetap 1 baris/order seperti sebelumnya). Kolom yang saya tandai
+#    "~" di komentar adalah pendekatan terbaik (bukan field yang 100%
+#    identik namanya), dan yang saya tandai "—" memang tidak ada
+#    padanannya di TikTok Shop API (kelihatannya kolom ini aslinya dari
+#    template Tokopedia) sehingga akan selalu kosong/0.
+# =================================================================
+
 # ─────────────────────────────────────────────
 # KONFIGURASI API & DB
 # ─────────────────────────────────────────────
@@ -29,24 +55,35 @@ AUTH_URL_SELLER = "https://services.tiktokshop.com/open/authorize"
 # ─────────────────────────────────────────────
 # SIGNATURE
 # ─────────────────────────────────────────────
-def generate_signature(params: dict, app_secret: str, body: dict = None) -> str:
-    import json as _json
+def generate_signature(path: str, params: dict, app_secret: str, body: dict = None) -> str:
+    """
+    Algoritma resmi TikTok Shop:
+      string = app_secret + PATH + sorted(key+value semua query param, exclude sign & access_token)
+               + json_body (kalau method-nya bukan GET)
+               + app_secret
+      sign   = HMAC_SHA256(string, app_secret) -> hex LOWERCASE
+
+    'path' WAJIB diikutkan (contoh: "/order/202309/orders/search"). Ini yang
+    hilang di versi sebelumnya sehingga semua request bertanda tangan gagal.
+    """
     exclude = {"sign", "access_token"}
     sign_params = {k: v for k, v in params.items()
                    if k not in exclude and v is not None}
     sorted_keys = sorted(sign_params.keys())
-    sign_string = app_secret
-    for key in sorted_keys:
-        sign_string += f"{key}{sign_params[key]}"
-    # Jika ada body (POST), tambahkan JSON string body ke sign_string
+
+    base_string = "".join(f"{key}{sign_params[key]}" for key in sorted_keys)
+    base_string = path + base_string
+
     if body:
-        sign_string += _json.dumps(body, separators=(",", ":"), ensure_ascii=False)
-    sign_string += app_secret
+        base_string += json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+
+    base_string = app_secret + base_string + app_secret
+
     signature = hmac.new(
         app_secret.encode("utf-8"),
-        sign_string.encode("utf-8"),
+        base_string.encode("utf-8"),
         hashlib.sha256
-    ).hexdigest().upper()
+    ).hexdigest()  # TANPA .upper() -- contoh resmi TikTok pakai lowercase hex
     return signature
 
 
@@ -64,9 +101,8 @@ def get_auth_url() -> str:
 
 def exchange_auth_code(auth_code: str) -> dict:
     """
-    FIX #1: Gunakan POST bukan GET
-    FIX #2: grant_type = "authorized_code"
-    FIX #3: Kirim sebagai query params (bukan body) sesuai docs TikTok
+    Endpoint token TIDAK butuh signature (app_secret dikirim langsung di
+    query param), jadi bagian ini sudah benar dari awal dan tidak diubah.
     """
     url = f"{AUTH_URL}/api/v2/token/get"
     params = {
@@ -76,7 +112,6 @@ def exchange_auth_code(auth_code: str) -> dict:
         "grant_type": "authorized_code",
     }
     try:
-        # TikTok token endpoint menerima GET dengan query params
         resp = requests.get(url, params=params, timeout=30)
         resp.raise_for_status()
         result = resp.json()
@@ -103,28 +138,30 @@ def refresh_access_token(refresh_token: str) -> dict:
 
 def get_authorized_shops(access_token: str) -> list:
     """
-    Setelah dapat access_token, panggil endpoint ini untuk mendapatkan
-    shop_id dan shop_cipher dari semua toko yang diotorisasi seller.
-    Endpoint: GET /api/v2/seller/permissions
-
-    Response berisi list authorized_shops:
-      [{"shop_id": "...", "shop_cipher": "...", "shop_name": "...", ...}, ...]
+    FIX: path lama /api/v2/seller/permissions sudah tidak ada.
+    Endpoint sekarang: GET /authorization/202309/shops
+    Response juga berubah bentuk: data.shops[] dengan field 'id' & 'cipher'
+    (dulu diasumsikan data.authorized_shops[] dengan 'shop_id'/'shop_cipher').
+    Kode di bawah coba keduanya supaya tetap jalan kalau ternyata masih
+    dikembalikan dengan nama lama.
     """
     timestamp = str(int(time.time()))
+    endpoint = "/authorization/202309/shops"
     params = {
-        "app_key":      APP_KEY,
-        "timestamp":    timestamp,
+        "app_key":   APP_KEY,
+        "timestamp": timestamp,
     }
-    params["sign"]         = generate_signature(params, APP_SECRET, None)
+    params["sign"]         = generate_signature(endpoint, params, APP_SECRET, None)
     params["access_token"] = access_token
 
-    url = f"{BASE_URL}/api/v2/seller/permissions"
+    url = f"{BASE_URL}{endpoint}"
     try:
         resp = requests.get(url, params=params, timeout=30)
         result = resp.json()
         st.write("🔍 Debug authorized shops response:", result)
         if result.get("code") == 0:
-            return result.get("data", {}).get("authorized_shops", [])
+            data = result.get("data", {})
+            return data.get("shops") or data.get("authorized_shops") or []
         return []
     except Exception as e:
         st.warning(f"Gagal ambil authorized shops: {e}")
@@ -142,26 +179,31 @@ def make_tiktok_request(
     body: dict = None,
     **extra_params,
 ) -> dict:
+    """
+    extra_params sekarang SELALU jadi query string (termasuk page_size,
+    sort_field, sort_order, page_token). Untuk endpoint POST search,
+    hanya kriteria filter asli yang boleh masuk 'body'.
+    """
     timestamp = str(int(time.time()))
     params = {
         "app_key":   APP_KEY,
         "timestamp": timestamp,
-        "access_token": access_token,  # FIX: Token WAJIB di URL params
     }
     if shop_cipher:
         params["shop_cipher"] = shop_cipher
     for k, v in extra_params.items():
         if v is not None:
             params[k] = v
-    
-    # Generate signature (fungsi generate_signature bawaan Anda sudah benar dengan mengecualikan access_token)
-    params["sign"] = generate_signature(params, APP_SECRET, body if method.upper() == "POST" else None)
-    
+
+    params["sign"] = generate_signature(
+        endpoint, params, APP_SECRET, body if method.upper() == "POST" else None
+    )
+
     headers = {
         "Content-Type": "application/json",
-        # Hapus "x-tts-access-token" karena sudah ditolak oleh API
     }
-    
+    params["access_token"] = access_token  # dikecualikan dari sign, aman ditaruh di query
+
     url = f"{BASE_URL}{endpoint}"
     try:
         if method.upper() == "POST":
@@ -203,31 +245,34 @@ def epoch_to_wib(epoch_ms) -> str:
 # API FETCHERS
 # ─────────────────────────────────────────────
 def get_all_orders(access_token, shop_cipher, start_time, end_time):
-    all_orders, cursor = [], None
+    all_orders, page_token = [], None
     for _ in range(100):
-        extra = {
+        body = {
             "create_time_ge": int(start_time.timestamp()),
             "create_time_lt": int(end_time.timestamp()),
-            "page_size":      50,
-            "sort_type":      1,
-            "sort_field":     "create_time",
         }
-        if cursor:
-            extra["cursor"] = cursor
+        query = {
+            "page_size":  50,
+            "sort_field": "create_time",
+            "sort_order": "ASC",
+        }
+        if page_token:
+            query["page_token"] = page_token
 
         result = make_tiktok_request(
-            "/api/v2/order/orders/search",
+            "/order/202309/orders/search",
             access_token, shop_cipher,
             method="POST",
-            body=extra
+            body=body,
+            **query,
         )
 
         if result.get("code") == 0:
             data   = result.get("data", {})
-            orders = data.get("order_list", [])
+            orders = data.get("order_list") or data.get("orders") or []
             all_orders.extend(orders)
-            cursor = data.get("next_page_token")
-            if not cursor or not orders:
+            page_token = data.get("next_page_token")
+            if not page_token or not orders:
                 break
         else:
             st.error(f"Error pesanan: {result.get('message')}")
@@ -236,69 +281,131 @@ def get_all_orders(access_token, shop_cipher, start_time, end_time):
     return all_orders
 
 
-def get_order_detail(access_token, shop_cipher, order_id):
-    result = make_tiktok_request(
-        "/api/v2/order/orders/detail",
-        access_token, shop_cipher,
-        order_id=order_id
-    )
-    return result.get("data", {}) if result.get("code") == 0 else {}
+def get_order_details_batch(access_token, shop_cipher, order_ids, progress_bar=None):
+    """
+    FIX: endpoint detail per-order yang lama (/api/v2/order/orders/detail)
+    sudah tidak ada. Sekarang satu endpoint bisa ambil banyak order sekaligus:
+    GET /order/202309/orders?ids=id1,id2,...  (batch, bukan loop per order).
+    """
+    all_details = []
+    order_ids = [oid for oid in order_ids if oid]
+    chunks = [order_ids[i:i + 50] for i in range(0, len(order_ids), 50)]
+
+    for idx, chunk in enumerate(chunks):
+        result = make_tiktok_request(
+            "/order/202309/orders",
+            access_token, shop_cipher,
+            method="GET",
+            ids=",".join(chunk),
+        )
+        if result.get("code") == 0:
+            data = result.get("data", {})
+            all_details.extend(data.get("orders") or data.get("order_list") or [])
+        else:
+            st.error(f"Error detail pesanan: {result.get('message')}")
+            st.json(result)
+
+        if progress_bar:
+            progress_bar.progress((idx + 1) / len(chunks))
+
+    return all_details
 
 
-def get_settlements(access_token, shop_cipher, start_time, end_time):
-    all_settlements, cursor = [], None
+def get_statements(access_token, shop_cipher, start_time, end_time):
+    """
+    FIX konseptual: 'settlements search' (POST /api/v2/finance/settlements/search)
+    sudah tidak ada di API TikTok Shop sekarang. Diganti 'Statements' — daftar
+    periode settlement. Rincian per-order ada di get_statement_transactions().
+    """
+    all_statements, page_token = [], None
     for _ in range(100):
-        extra = {
-            "settlement_time_ge": int(start_time.timestamp()),
-            "settlement_time_lt": int(end_time.timestamp()),
+        query = {
+            "sort_field":         "statement_time",
+            "statement_time_ge":  int(start_time.timestamp()),
+            "statement_time_lt":  int(end_time.timestamp()),
             "page_size":          50,
         }
-        if cursor:
-            extra["cursor"] = cursor
+        if page_token:
+            query["page_token"] = page_token
 
-        # FIX: Path resmi TikTok wajib menggunakan /api/v2/
         result = make_tiktok_request(
-            "/api/v2/finance/settlements/search", 
-            access_token, 
-            shop_cipher, 
-            method="POST", 
-            body=extra
+            "/finance/202309/statements",
+            access_token, shop_cipher,
+            method="GET",
+            **query,
         )
-        
+
         if result.get("code") == 0:
-            data        = result.get("data", {})
-            settlements = data.get("settlement_list", [])
-            all_settlements.extend(settlements)
-            cursor = data.get("next_page_token")
-            if not cursor or not settlements:
+            data = result.get("data", {})
+            statements = data.get("statements") or data.get("statement_list") or []
+            all_statements.extend(statements)
+            page_token = data.get("next_page_token")
+            if not page_token or not statements:
                 break
         else:
-            st.error(f"Error settlement: {result.get('message')}")
+            st.error(f"Error statement: {result.get('message')}")
             st.json(result)
             break
-    return all_settlements
+    return all_statements
+
+
+def get_statement_transactions(access_token, shop_cipher, statement_id):
+    """
+    Rincian transaksi per-order di dalam 1 statement.
+    GET /finance/202309/statements/{statement_id}/statement_transactions
+    """
+    all_tx, page_token = [], None
+    for _ in range(100):
+        query = {"sort_field": "order_create_time", "page_size": 50}
+        if page_token:
+            query["page_token"] = page_token
+
+        result = make_tiktok_request(
+            f"/finance/202309/statements/{statement_id}/statement_transactions",
+            access_token, shop_cipher,
+            method="GET",
+            **query,
+        )
+
+        if result.get("code") == 0:
+            data = result.get("data", {})
+            tx = data.get("transactions") or data.get("statement_transactions") or data.get("list") or []
+            if not all_tx and tx:
+                # tampil sekali saja per sesi biar bisa cek nama field asli di response,
+                # hapus baris ini setelah dikonfirmasi cocok
+                st.write("🔍 Debug struktur 1 statement_transaction:", tx[0])
+            all_tx.extend(tx)
+            page_token = data.get("next_page_token")
+            if not page_token or not tx:
+                break
+        else:
+            st.warning(f"Error statement_transactions ({statement_id}): {result.get('message')}")
+            break
+    return all_tx
 
 
 def get_products(access_token, shop_cipher):
-    all_products, cursor = [], None
+    all_products, page_token = [], None
     for _ in range(100):
-        extra = {"page_size": 50, "status": 1}
-        if cursor:
-            extra["cursor"] = cursor
+        body = {"status": 1}
+        query = {"page_size": 50}
+        if page_token:
+            query["page_token"] = page_token
 
         result = make_tiktok_request(
-            "/api/v2/product/products/search",
+            "/product/202309/products/search",
             access_token, shop_cipher,
             method="POST",
-            body=extra
+            body=body,
+            **query,
         )
-        
+
         if result.get("code") == 0:
             data     = result.get("data", {})
-            products = data.get("product_list", [])
+            products = data.get("products") or data.get("product_list") or []
             all_products.extend(products)
-            cursor = data.get("next_page_token")
-            if not cursor or not products:
+            page_token = data.get("next_page_token")
+            if not page_token or not products:
                 break
         else:
             st.error(f"Error produk: {result.get('message')}")
@@ -308,31 +415,34 @@ def get_products(access_token, shop_cipher):
 
 
 def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
-    all_orders, cursor = [], None
+    """
+    FIX: kategori & versi endpoint affiliate berubah. Minimal version 202405,
+    dan kategorinya 'affiliate_seller' (bukan 'affiliate').
+    """
+    all_orders, page_token = [], None
     for _ in range(100):
-        extra = {
+        body = {
             "create_time_ge": int(start_time.timestamp()),
             "create_time_lt": int(end_time.timestamp()),
-            "page_size":      50,
         }
-        if cursor:
-            extra["cursor"] = cursor
+        query = {"page_size": 50}
+        if page_token:
+            query["page_token"] = page_token
 
-        # FIX: Path resmi TikTok wajib menggunakan /api/v2/
         result = make_tiktok_request(
-            "/api/v2/affiliate/orders/search", 
-            access_token, 
-            shop_cipher, 
+            "/affiliate_seller/202405/orders/search",
+            access_token, shop_cipher,
             method="POST",
-            body=extra
+            body=body,
+            **query,
         )
-        
+
         if result.get("code") == 0:
             data   = result.get("data", {})
-            orders = data.get("order_list", [])
+            orders = data.get("orders") or data.get("order_list") or []
             all_orders.extend(orders)
-            cursor = data.get("next_page_token")
-            if not cursor or not orders:
+            page_token = data.get("next_page_token")
+            if not page_token or not orders:
                 break
         else:
             st.warning(f"Affiliate API: {result.get('message')}")
@@ -456,74 +566,111 @@ def format_orders_excel(orders_data, order_details):
     return pd.DataFrame(rows)
 
 
-def format_income_excel(settlements_data):
+def _sum_path(sku_transactions, *path):
+    """
+    Jumlahkan satu field numerik dari SEMUA sku_transactions dalam 1 order,
+    supaya baris laporan tetap 1 baris/order (sama seperti skema lama).
+    Contoh: _sum_path(tx["sku_transactions"], "fee_tax_breakdown", "fee",
+                       "platform_commission_amount")
+    """
+    total = 0.0
+    for sku in sku_transactions or []:
+        node = sku
+        for key in path:
+            if not isinstance(node, dict):
+                node = None
+                break
+            node = node.get(key)
+        if node is not None:
+            try:
+                total += float(node)
+            except (TypeError, ValueError):
+                pass
+    return total
+
+
+def format_income_excel(transactions):
+    """
+    Sumber data: GET /finance/202309/statements/{id}/statement_transactions
+    (dulu POST /api/v2/finance/settlements/search, sudah tidak ada).
+
+    Semua nama kolom di bawah PERSIS seperti versi lama. Field yang saya
+    tandai "~" adalah padanan terbaik yang bisa saya konfirmasi (bukan 100%
+    nama identik dari TikTok). Field yang ditandai "—" tidak punya padanan
+    di data TikTok Shop (sepertinya ini kolom dari template Tokopedia) jadi
+    akan selalu 0/kosong.
+    """
     rows = []
-    for s in settlements_data:
+    for t in transactions:
+        skus = t.get("sku_transactions", [])
+
         rows.append({
-            "Order/adjustment ID":                     s.get("order_id", ""),
-            "Type":                                    s.get("settlement_type", "Order"),
-            "Order created time":                      epoch_to_wib(s.get("order_create_time")),
-            "Order settled time":                      epoch_to_wib(s.get("settlement_time")),
-            "Currency":                                s.get("currency", "IDR"),
-            "Total settlement amount":                 s.get("settlement_amount", 0),
-            "Total Revenue":                           s.get("total_revenue", 0),
-            "Subtotal after seller discounts":         s.get("subtotal_after_discount", 0),
-            "Subtotal before discounts":               s.get("subtotal_before_discount", 0),
-            "Seller discounts":                        s.get("seller_discount", 0),
-            "Distance item fee from Horizon+ Program": s.get("distance_item_fee", 0),
-            "Refund subtotal after seller discounts":  s.get("refund_subtotal_after_discount", 0),
-            "Refund subtotal before seller discounts": s.get("refund_subtotal_before_discount", 0),
-            "Refund of seller discounts":              s.get("refund_seller_discount", 0),
-            "Total Fees":                              s.get("total_fee", 0),
-            "Platform commission fee":                 s.get("platform_commission", 0),
-            "Pre-order service fee":                   s.get("pre_order_service_fee", 0),
-            "Mall service fee":                        s.get("mall_service_fee", 0),
-            "Payment Fee":                             s.get("payment_fee", 0),
-            "Shipping cost":                           s.get("shipping_cost", 0),
-            "Shipping costs passed on to logistics":   s.get("shipping_cost_logistics", 0),
-            "Replacement shipping fee":                s.get("replacement_shipping_fee", 0),
-            "Exchange shipping fee":                   s.get("exchange_shipping_fee", 0),
-            "Shipping cost borne by platform":         s.get("shipping_cost_platform", 0),
-            "Shipping cost paid by customer":          s.get("shipping_cost_customer", 0),
-            "Refunded shipping cost by customer":      s.get("refunded_shipping_cost", 0),
-            "Return shipping costs":                   s.get("return_shipping_cost", 0),
-            "Shipping cost subsidy":                   s.get("shipping_subsidy", 0),
-            "Distance shipping fee Horizon+":          s.get("distance_shipping_fee", 0),
-            "Affiliate Commission":                    s.get("affiliate_commission", 0),
-            "Affiliate partner commission":            s.get("affiliate_partner_commission", 0),
-            "Affiliate Shop Ads commission":           s.get("affiliate_shop_ads_commission", 0),
-            "Affiliate Partner shop ads commission":   s.get("affiliate_partner_shop_ads", 0),
-            "Shipping Fee Program service fee":        s.get("shipping_fee_program_service", 0),
-            "Dynamic commission":                      s.get("dynamic_commission", 0),
-            "Bonus cashback service fee":              s.get("bonus_cashback_fee", 0),
-            "LIVE Specials service fee":               s.get("live_specials_fee", 0),
-            "Voucher Xtra service fee":                s.get("voucher_xtra_fee", 0),
-            "Order processing fee":                    s.get("order_processing_fee", 0),
-            "EAMS Program service fee":                s.get("eams_fee", 0),
-            "Flash Sale service fee":                  s.get("flash_sale_fee", 0),
-            "Dilayani Tokopedia fee":                  s.get("dilayani_tokopedia_fee", 0),
-            "Dilayani Tokopedia handling fee":         s.get("dilayani_handling_fee", 0),
-            "PayLater program fee":                    s.get("paylater_fee", 0),
-            "Campaign resource fee":                   s.get("campaign_resource_fee", 0),
-            "Installation service fee":                s.get("installation_fee", 0),
-            "Article 22 Income Tax withheld":          s.get("pph22", 0),
-            "Platform special service fee":            s.get("platform_special_fee", 0),
-            "GMV Max ad fee":                          s.get("gmv_max_ad_fee", 0),
-            "Adjustment amount":                       s.get("adjustment_amount", 0),
-            "Related order ID":                        s.get("related_order_id", ""),
-            "Customer payment":                        s.get("customer_payment", 0),
-            "Customer refund":                         s.get("customer_refund", 0),
-            "Seller co-funded voucher discount":       s.get("seller_voucher_discount", 0),
-            "Refund of seller co-funded voucher":      s.get("refund_seller_voucher", 0),
-            "Platform discounts":                      s.get("platform_discount", 0),
-            "Refund of platform discounts":            s.get("refund_platform_discount", 0),
-            "Platform co-funded voucher discounts":    s.get("platform_co_funded_voucher", 0),
-            "Refund of platform co-funded voucher":    s.get("refund_platform_co_funded", 0),
-            "Seller shipping cost discount":           s.get("seller_shipping_discount", 0),
-            "Estimated package weight (g)":            s.get("estimated_weight", 0),
-            "Actual package weight (g)":               s.get("actual_weight", 0),
-            "Shopping center items":                   s.get("shopping_center_items", ""),
-            "Order Source":                            s.get("order_source", ""),
+            "Order/adjustment ID":                     t.get("order_id", ""),
+            "Type":                                     "Order",
+            "Order created time":                       epoch_to_wib(t.get("order_create_time")),
+            "Order settled time":                        epoch_to_wib(t.get("_statement_settled_time")),
+            "Currency":                                  t.get("currency", "IDR"),
+            "Total settlement amount":                   t.get("settlement_amount", 0),
+            "Total Revenue":                             t.get("revenue_amount", 0),
+            "Subtotal after seller discounts":           _sum_path(skus, "revenue_breakdown", "subtotal_before_discount_amount")
+                                                          + _sum_path(skus, "revenue_breakdown", "seller_discount_amount"),
+            "Subtotal before discounts":                 _sum_path(skus, "revenue_breakdown", "subtotal_before_discount_amount"),
+            "Seller discounts":                          _sum_path(skus, "revenue_breakdown", "seller_discount_amount"),
+            "Distance item fee from Horizon+ Program":   _sum_path(skus, "revenue_breakdown", "distant_item_fee_amount"),
+            "Refund subtotal after seller discounts":    _sum_path(skus, "revenue_breakdown", "refund_subtotal_before_discount_amount")
+                                                          + _sum_path(skus, "revenue_breakdown", "seller_discount_refund_amount"),
+            "Refund subtotal before seller discounts":   _sum_path(skus, "revenue_breakdown", "refund_subtotal_before_discount_amount"),
+            "Refund of seller discounts":                _sum_path(skus, "revenue_breakdown", "seller_discount_refund_amount"),
+            "Total Fees":                                t.get("fee_and_tax_amount", 0),
+            "Platform commission fee":                   _sum_path(skus, "fee_tax_breakdown", "fee", "platform_commission_amount"),
+            "Pre-order service fee":                     _sum_path(skus, "fee_tax_breakdown", "fee", "pre_order_service_fee_amount"),
+            "Mall service fee":                          _sum_path(skus, "fee_tax_breakdown", "fee", "mall_service_fee_amount"),
+            "Payment Fee":                                _sum_path(skus, "fee_tax_breakdown", "fee", "credit_card_handling_fee_amount"),  # ~
+            "Shipping cost":                             t.get("shipping_cost_amount", 0),
+            "Shipping costs passed on to logistics":     _sum_path(skus, "shipping_cost_breakdown", "actual_shipping_fee_amount"),  # ~
+            "Replacement shipping fee":                  _sum_path(skus, "shipping_cost_breakdown", "replacement_shipping_fee_amount"),
+            "Exchange shipping fee":                     _sum_path(skus, "shipping_cost_breakdown", "exchange_shipping_fee_amount"),
+            "Shipping cost borne by platform":           _sum_path(skus, "shipping_cost_breakdown", "supplementary_component", "platform_shipping_fee_discount_amount"),
+            "Shipping cost paid by customer":            _sum_path(skus, "shipping_cost_breakdown", "customer_paid_shipping_fee_amount"),
+            "Refunded shipping cost by customer":        _sum_path(skus, "shipping_cost_breakdown", "supplementary_component", "refunded_customer_shipping_fee_amount"),
+            "Return shipping costs":                     _sum_path(skus, "shipping_cost_breakdown", "return_shipping_fee_amount"),
+            "Shipping cost subsidy":                     _sum_path(skus, "shipping_cost_breakdown", "supplementary_component", "shipping_fee_subsidy_amount"),
+            "Distance shipping fee Horizon+":             _sum_path(skus, "shipping_cost_breakdown", "distant_shipping_fee_amount"),
+            "Affiliate Commission":                      _sum_path(skus, "fee_tax_breakdown", "fee", "affiliate_commission_amount"),
+            "Affiliate partner commission":              _sum_path(skus, "fee_tax_breakdown", "fee", "affiliate_partner_commission_amount"),
+            "Affiliate Shop Ads commission":             _sum_path(skus, "fee_tax_breakdown", "fee", "affiliate_ads_commission_amount"),
+            "Affiliate Partner shop ads commission":     0,  # —
+            "Shipping Fee Program service fee":          _sum_path(skus, "fee_tax_breakdown", "fee", "shipping_fee_guarantee_service_fee"),
+            "Dynamic commission":                        _sum_path(skus, "fee_tax_breakdown", "fee", "dynamic_commission_amount"),
+            "Bonus cashback service fee":                _sum_path(skus, "fee_tax_breakdown", "fee", "bonus_cashback_service_fee_amount"),
+            "LIVE Specials service fee":                 _sum_path(skus, "fee_tax_breakdown", "fee", "live_specials_fee_amount"),
+            "Voucher Xtra service fee":                  _sum_path(skus, "fee_tax_breakdown", "fee", "voucher_xtra_service_fee_amount"),
+            "Order processing fee":                      _sum_path(skus, "fee_tax_breakdown", "fee", "fee_per_item_sold_amount"),  # ~
+            "EAMS Program service fee":                  _sum_path(skus, "fee_tax_breakdown", "fee", "epr_pob_service_fee_amount"),  # ~
+            "Flash Sale service fee":                    _sum_path(skus, "fee_tax_breakdown", "fee", "flash_sales_service_fee_amount"),
+            "Dilayani Tokopedia fee":                    0,  # — (kolom Tokopedia, tidak ada di TikTok Shop)
+            "Dilayani Tokopedia handling fee":           0,  # —
+            "PayLater program fee":                      _sum_path(skus, "fee_tax_breakdown", "fee", "seller_paylater_handling_fee_amount"),
+            "Campaign resource fee":                     0,  # —
+            "Installation service fee":                  _sum_path(skus, "fee_tax_breakdown", "fee", "installation_service_fee"),
+            "Article 22 Income Tax withheld":            _sum_path(skus, "fee_tax_breakdown", "tax", "pit_amount"),  # ~
+            "Platform special service fee":              _sum_path(skus, "fee_tax_breakdown", "fee", "platform_special_service_fee_amount"),
+            "GMV Max ad fee":                            _sum_path(skus, "fee_tax_breakdown", "fee", "gmv_max_ad_fee_amount"),
+            "Adjustment amount":                         0,  # —
+            "Related order ID":                          "",  # —
+            "Customer payment":                          0,  # —
+            "Customer refund":                           0,  # —
+            "Seller co-funded voucher discount":         _sum_path(skus, "fee_tax_breakdown", "fee", "cofunded_promotion_service_fee_amount"),  # ~
+            "Refund of seller co-funded voucher":        0,  # —
+            "Platform discounts":                        0,  # —
+            "Refund of platform discounts":              0,  # —
+            "Platform co-funded voucher discounts":      _sum_path(skus, "fee_tax_breakdown", "fee", "cofunded_creator_bonus_amount"),  # ~
+            "Refund of platform co-funded voucher":      0,  # —
+            "Seller shipping cost discount":             _sum_path(skus, "shipping_cost_breakdown", "supplementary_component", "seller_shipping_fee_discount_amount"),
+            "Estimated package weight (g)":              0,  # —
+            "Actual package weight (g)":                 0,  # —
+            "Shopping center items":                     "",  # —
+            "Order Source":                              "",  # —
         })
     return pd.DataFrame(rows)
 
@@ -608,9 +755,8 @@ def save_token_to_db(token_data: dict, shop_info: dict, seller_name: str = "Unkn
     """
     Simpan token ke Supabase.
 
-    token_data  = response dari exchange_auth_code / refresh_access_token
-    shop_info   = satu entry dari get_authorized_shops()
-                  berisi shop_id, shop_cipher, shop_name (atau shop_nickname)
+    FIX: shop_info sekarang bisa datang dari skema baru ('id'/'cipher')
+    ataupun lama ('shop_id'/'shop_cipher') -- dicoba dua-duanya.
 
     Kolom Supabase yang diperlukan:
       shop_id TEXT PRIMARY KEY, shop_cipher TEXT, shop_name TEXT,
@@ -619,9 +765,10 @@ def save_token_to_db(token_data: dict, shop_info: dict, seller_name: str = "Unkn
       updated_at TIMESTAMPTZ
     """
     try:
-        shop_id     = str(shop_info.get("shop_id") or shop_info.get("shop_id") or "unknown")
-        shop_cipher = str(shop_info.get("shop_cipher") or shop_id)
-        shop_name   = shop_info.get("shop_name") or shop_info.get("shop_nickname") or seller_name
+        shop_id     = str(shop_info.get("id") or shop_info.get("shop_id") or "unknown")
+        shop_cipher = str(shop_info.get("cipher") or shop_info.get("shop_cipher") or shop_id)
+        shop_name   = (shop_info.get("name") or shop_info.get("shop_name")
+                       or shop_info.get("shop_nickname") or seller_name)
 
         data = {
             "shop_id":                 shop_id,
@@ -770,7 +917,7 @@ with st.sidebar:
         now_wib = now + timedelta(hours=7)
         start_date = now_wib - timedelta(days=30)
         end_date   = now_wib
-    
+
     else:
         col1, col2 = st.columns(2)
         with col1:
@@ -811,10 +958,17 @@ if selected_shop:
         st.caption(f"WIB: {start_date:%d %b %Y %H:%M} — {end_date:%d %b %Y %H:%M}")
         if st.button("🔄 Tarik & Download", key="btn_income", type="primary"):
             with st.spinner("Mengambil data keuangan..."):
-                settlements = get_settlements(access_token, shop_cipher, start_utc, end_utc)
-            if settlements:
-                df = format_income_excel(settlements)
-                st.success(f"✅ {len(settlements)} transaksi ditemukan")
+                statements = get_statements(access_token, shop_cipher, start_utc, end_utc)
+                transactions = []
+                for s in statements:
+                    statement_id   = s.get("id") or s.get("statement_id")
+                    statement_time = s.get("statement_time") or s.get("create_time")
+                    for tx in get_statement_transactions(access_token, shop_cipher, statement_id):
+                        tx["_statement_settled_time"] = statement_time
+                        transactions.append(tx)
+            if transactions:
+                df = format_income_excel(transactions)
+                st.success(f"✅ {len(transactions)} transaksi ditemukan dari {len(statements)} statement")
                 st.dataframe(df.head(10), use_container_width=True)
                 st.download_button(
                     "📥 Download Excel Income",
@@ -834,12 +988,9 @@ if selected_shop:
                 orders = get_all_orders(access_token, shop_cipher, start_utc, end_utc)
             if orders:
                 st.info(f"📋 {len(orders)} pesanan ditemukan, mengambil detail...")
-                progress = st.progress(0)
-                details  = []
-                for i, o in enumerate(orders):
-                    details.append(get_order_detail(access_token, shop_cipher, o.get("order_id")))
-                    progress.progress((i + 1) / len(orders))
-                    time.sleep(0.05)
+                order_ids = [o.get("order_id") for o in orders]
+                progress  = st.progress(0)
+                details   = get_order_details_batch(access_token, shop_cipher, order_ids, progress_bar=progress)
                 df = format_orders_excel(orders, details)
                 st.success(f"✅ {len(df)} baris data diproses")
                 st.dataframe(df.head(10), use_container_width=True)
