@@ -236,11 +236,11 @@ def to_wib(utc_timestamp) -> str:
         return str(utc_timestamp)
 
 
-def epoch_to_wib(epoch_ms) -> str:
-    if not epoch_ms:
+def epoch_to_wib(epoch_val) -> str:
+    if not epoch_val:
         return ""
     try:
-        utc_time = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+        utc_time = datetime.fromtimestamp(epoch_val, tz=timezone.utc)
         return (utc_time + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return ""
@@ -275,6 +275,8 @@ def get_all_orders(access_token, shop_cipher, start_time, end_time):
         if result.get("code") == 0:
             data   = result.get("data", {})
             orders = data.get("order_list") or data.get("orders") or []
+            if not all_orders and orders:
+                st.write("🔍 Debug struktur 1 order:", orders[0])
             all_orders.extend(orders)
             page_token = data.get("next_page_token")
             if not page_token or not orders:
@@ -392,7 +394,7 @@ def get_statement_transactions(access_token, shop_cipher, statement_id):
 def get_products(access_token, shop_cipher):
     all_products, page_token = [], None
     for _ in range(100):
-        body = {"status": "1"}
+        body = {"status": "ACTIVATE"}
         query = {"page_size": 50}
         if page_token:
             query["page_token"] = page_token
