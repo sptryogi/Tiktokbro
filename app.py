@@ -410,6 +410,8 @@ def get_products(access_token, shop_cipher):
         if result.get("code") == 0:
             data     = result.get("data", {})
             products = data.get("products") or data.get("product_list") or []
+            if not all_products and products:
+                st.write("🔍 Debug struktur 1 produk:", products[0])
             all_products.extend(products)
             page_token = data.get("next_page_token")
             if not page_token or not products:
@@ -461,71 +463,178 @@ def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
 # ─────────────────────────────────────────────
 # FORMATTING → DATAFRAME
 # ─────────────────────────────────────────────
+# def format_orders_excel(orders_data, order_details):
+#     rows         = []
+#     details_dict = {d.get("order_id"): d for d in order_details if d}
+
+#     for order in orders_data:
+#         order_id  = order.get("order_id")
+#         detail    = details_dict.get(order_id, {})
+
+#         created_time   = epoch_to_wib(order.get("create_time"))
+#         paid_time      = epoch_to_wib(order.get("paid_time"))
+#         rts_time       = epoch_to_wib(order.get("rts_time"))
+#         shipped_time   = epoch_to_wib(order.get("shipped_time"))
+#         delivered_time = epoch_to_wib(order.get("delivered_time"))
+#         cancelled_time = epoch_to_wib(order.get("cancelled_time"))
+
+#         buyer_info     = detail.get("buyer_info", {})
+#         recipient_info = detail.get("recipient_info", {})
+#         payment_info   = detail.get("payment_info", {})
+#         shipping_info  = detail.get("shipping_info", {})
+#         items          = detail.get("item_list", [])
+
+#         base = {
+#             "Order ID":              order_id,
+#             "Order Status":          order.get("order_status", ""),
+#             "Order Substatus":       order.get("order_sub_status", ""),
+#             "Shipping Fee After Discount":   order.get("shipping_fee", 0),
+#             "Original Shipping Fee":         order.get("original_shipping_fee", 0),
+#             "Order Refund Amount":           order.get("refund_amount", 0),
+#             "Order Amount":                  order.get("total_amount", 0),
+#             "Created Time":          created_time,
+#             "Paid Time":             paid_time,
+#             "RTS Time":              rts_time,
+#             "Shipped Time":          shipped_time,
+#             "Delivered Time":        delivered_time,
+#             "Cancelled Time":        cancelled_time,
+#             "Cancel By":             order.get("cancel_user", ""),
+#             "Cancel Reason":         order.get("cancel_reason", ""),
+#             "Fulfillment Type":      shipping_info.get("fulfillment_type", ""),
+#             "Warehouse Name":        shipping_info.get("warehouse_name", ""),
+#             "Tracking ID":           shipping_info.get("tracking_number", ""),
+#             "Delivery Option":       shipping_info.get("delivery_option", ""),
+#             "Shipping Provider Name": shipping_info.get("shipping_provider_name", ""),
+#             "Buyer Message":         buyer_info.get("buyer_message", ""),
+#             "Buyer Username":        buyer_info.get("buyer_nickname", ""),
+#             "Recipient":             recipient_info.get("name", ""),
+#             "Phone #":               recipient_info.get("phone", ""),
+#             "Zipcode":               recipient_info.get("zipcode", ""),
+#             "Country":               recipient_info.get("country", ""),
+#             "Province":              recipient_info.get("state", ""),
+#             "Regency and City":      recipient_info.get("city", ""),
+#             "Districts":             recipient_info.get("district", ""),
+#             "Villages":              recipient_info.get("village", ""),
+#             "Detail Address":        recipient_info.get("full_address", ""),
+#             "Additional address information": recipient_info.get("address_detail", ""),
+#             "Payment Method":        payment_info.get("payment_method", ""),
+#             "Purchase Channel":      order.get("purchase_channel", ""),
+#             "Seller Note":           order.get("seller_note", ""),
+#             "Tokopedia Invoice Number": order.get("tokopedia_invoice", ""),
+#         }
+
+#         if not items:
+#             rows.append({
+#                 **base,
+#                 "Cancelation/Return Type":  "",
+#                 "Normal or Pre-order":      "Normal",
+#                 "SKU ID": "", "Seller SKU": "", "Product Name": "",
+#                 "Variation": "", "Quantity": 0, "Sku Quantity of return": 0,
+#                 "SKU Unit Original Price": 0, "SKU Subtotal Before Discount": 0,
+#                 "SKU Platform Discount": 0, "SKU Seller Discount": 0,
+#                 "SKU Subtotal After Discount": 0,
+#                 "Shipping Fee Seller Discount": 0, "Shipping Fee Platform Discount": 0,
+#                 "Distance Shipping Fee": 0, "Distance Fee": 0,
+#                 "Payment platform discount": 0, "Buyer Service Fee": 0,
+#                 "Handling Fee": 0, "Shipping Insurance": 0, "Item Insurance": 0,
+#                 "Weight(kg)": 0, "Product Category": "", "Package ID": "",
+#                 "Checked Status": "", "Checked Marked by": "",
+#             })
+#         else:
+#             for item in items:
+#                 rows.append({
+#                     **base,
+#                     "Cancelation/Return Type": item.get("return_type", ""),
+#                     "Normal or Pre-order": "Pre-order" if item.get("is_pre_order") else "Normal",
+#                     "SKU ID":       item.get("sku_id", ""),
+#                     "Seller SKU":   item.get("seller_sku", ""),
+#                     "Product Name": item.get("product_name", ""),
+#                     "Variation":    item.get("variation_name", ""),
+#                     "Quantity":     item.get("quantity", 0),
+#                     "Sku Quantity of return": item.get("return_quantity", 0),
+#                     "SKU Unit Original Price":        item.get("original_price", 0),
+#                     "SKU Subtotal Before Discount":   item.get("subtotal_before_discount", 0),
+#                     "SKU Platform Discount":          item.get("platform_discount", 0),
+#                     "SKU Seller Discount":            item.get("seller_discount", 0),
+#                     "SKU Subtotal After Discount":    item.get("subtotal_after_discount", 0),
+#                     "Shipping Fee Seller Discount":   item.get("shipping_fee_seller_discount", 0),
+#                     "Shipping Fee Platform Discount": item.get("shipping_fee_platform_discount", 0),
+#                     "Distance Shipping Fee":          item.get("distance_shipping_fee", 0),
+#                     "Distance Fee":                   item.get("distance_fee", 0),
+#                     "Payment platform discount":      item.get("payment_platform_discount", 0),
+#                     "Buyer Service Fee":              item.get("buyer_service_fee", 0),
+#                     "Handling Fee":                   item.get("handling_fee", 0),
+#                     "Shipping Insurance":             item.get("shipping_insurance", 0),
+#                     "Item Insurance":                 item.get("item_insurance", 0),
+#                     "Weight(kg)":        item.get("weight", 0) / 1000 if item.get("weight") else 0,
+#                     "Product Category":  item.get("category_name", ""),
+#                     "Package ID":        item.get("package_id", ""),
+#                     "Checked Status":    item.get("checked_status", ""),
+#                     "Checked Marked by": item.get("checked_by", ""),
+#                 })
+#     return pd.DataFrame(rows)
+def _district(district_info, level_name):
+    for d in district_info or []:
+        if (d.get("address_level_name") or "").lower() == level_name.lower():
+            return d.get("address_name", "")
+    return ""
+
+
 def format_orders_excel(orders_data, order_details):
-    rows         = []
-    details_dict = {d.get("order_id"): d for d in order_details if d}
+    rows = []
+    details_dict = {d.get("id"): d for d in order_details if d}
 
     for order in orders_data:
-        order_id  = order.get("order_id")
-        detail    = details_dict.get(order_id, {})
+        o = {**order, **details_dict.get(order.get("id"), {})}  # detail nimpa order kalau ada
 
-        created_time   = epoch_to_wib(order.get("create_time"))
-        paid_time      = epoch_to_wib(order.get("paid_time"))
-        rts_time       = epoch_to_wib(order.get("rts_time"))
-        shipped_time   = epoch_to_wib(order.get("shipped_time"))
-        delivered_time = epoch_to_wib(order.get("delivered_time"))
-        cancelled_time = epoch_to_wib(order.get("cancelled_time"))
-
-        buyer_info     = detail.get("buyer_info", {})
-        recipient_info = detail.get("recipient_info", {})
-        payment_info   = detail.get("payment_info", {})
-        shipping_info  = detail.get("shipping_info", {})
-        items          = detail.get("item_list", [])
+        payment    = o.get("payment", {})
+        recipient  = o.get("recipient_address", {})
+        district   = recipient.get("district_info", [])
+        items      = o.get("line_items", [])
 
         base = {
-            "Order ID":              order_id,
-            "Order Status":          order.get("order_status", ""),
-            "Order Substatus":       order.get("order_sub_status", ""),
-            "Shipping Fee After Discount":   order.get("shipping_fee", 0),
-            "Original Shipping Fee":         order.get("original_shipping_fee", 0),
-            "Order Refund Amount":           order.get("refund_amount", 0),
-            "Order Amount":                  order.get("total_amount", 0),
-            "Created Time":          created_time,
-            "Paid Time":             paid_time,
-            "RTS Time":              rts_time,
-            "Shipped Time":          shipped_time,
-            "Delivered Time":        delivered_time,
-            "Cancelled Time":        cancelled_time,
-            "Cancel By":             order.get("cancel_user", ""),
-            "Cancel Reason":         order.get("cancel_reason", ""),
-            "Fulfillment Type":      shipping_info.get("fulfillment_type", ""),
-            "Warehouse Name":        shipping_info.get("warehouse_name", ""),
-            "Tracking ID":           shipping_info.get("tracking_number", ""),
-            "Delivery Option":       shipping_info.get("delivery_option", ""),
-            "Shipping Provider Name": shipping_info.get("shipping_provider_name", ""),
-            "Buyer Message":         buyer_info.get("buyer_message", ""),
-            "Buyer Username":        buyer_info.get("buyer_nickname", ""),
-            "Recipient":             recipient_info.get("name", ""),
-            "Phone #":               recipient_info.get("phone", ""),
-            "Zipcode":               recipient_info.get("zipcode", ""),
-            "Country":               recipient_info.get("country", ""),
-            "Province":              recipient_info.get("state", ""),
-            "Regency and City":      recipient_info.get("city", ""),
-            "Districts":             recipient_info.get("district", ""),
-            "Villages":              recipient_info.get("village", ""),
-            "Detail Address":        recipient_info.get("full_address", ""),
-            "Additional address information": recipient_info.get("address_detail", ""),
-            "Payment Method":        payment_info.get("payment_method", ""),
-            "Purchase Channel":      order.get("purchase_channel", ""),
-            "Seller Note":           order.get("seller_note", ""),
-            "Tokopedia Invoice Number": order.get("tokopedia_invoice", ""),
+            "Order ID":              o.get("id", ""),
+            "Order Status":          o.get("status", ""),
+            "Order Substatus":       "",  # tidak ada di data TikTok
+            "Shipping Fee After Discount":   payment.get("shipping_fee", 0),
+            "Original Shipping Fee":         payment.get("original_shipping_fee", 0),
+            "Order Refund Amount":           0,  # ada di API Return & Refund terpisah, bukan di order
+            "Order Amount":                  payment.get("total_amount", 0),
+            "Created Time":          epoch_to_wib(o.get("create_time")),
+            "Paid Time":             epoch_to_wib(o.get("paid_time")),
+            "RTS Time":              epoch_to_wib(o.get("rts_time")),
+            "Shipped Time":          epoch_to_wib(o.get("shipped_time")),
+            "Delivered Time":        epoch_to_wib(o.get("delivered_time")),
+            "Cancelled Time":        epoch_to_wib(o.get("cancelled_time")),
+            "Cancel By":             o.get("cancel_user", ""),
+            "Cancel Reason":         o.get("cancel_reason", ""),
+            "Fulfillment Type":      o.get("fulfillment_type", ""),
+            "Warehouse Name":        o.get("warehouse_id", ""),  # cuma ID, nama gudang nggak tersedia
+            "Tracking ID":           o.get("tracking_number", ""),
+            "Delivery Option":       o.get("delivery_option_name", ""),
+            "Shipping Provider Name": o.get("shipping_provider", ""),
+            "Buyer Message":         o.get("buyer_message", ""),
+            "Buyer Username":        o.get("buyer_email", ""),  # nickname nggak ada, email dipakai sbg identitas
+            "Recipient":             recipient.get("name", ""),
+            "Phone #":               recipient.get("phone_number", ""),
+            "Zipcode":               recipient.get("postal_code", ""),
+            "Country":               _district(district, "Country"),
+            "Province":              _district(district, "province"),
+            "Regency and City":      _district(district, "regency"),
+            "Districts":             _district(district, "Sub-district"),
+            "Villages":              _district(district, "Village"),
+            "Detail Address":        recipient.get("address_detail", ""),
+            "Additional address information": recipient.get("full_address", ""),
+            "Payment Method":        o.get("payment_method_name", ""),
+            "Purchase Channel":      o.get("commerce_platform", ""),
+            "Seller Note":           o.get("seller_note", ""),
+            "Tokopedia Invoice Number": "",  # kolom Tokopedia, tidak ada di TikTok
         }
 
         if not items:
             rows.append({
                 **base,
-                "Cancelation/Return Type":  "",
-                "Normal or Pre-order":      "Normal",
+                "Cancelation/Return Type": "", "Normal or Pre-order": "Normal",
                 "SKU ID": "", "Seller SKU": "", "Product Name": "",
                 "Variation": "", "Quantity": 0, "Sku Quantity of return": 0,
                 "SKU Unit Original Price": 0, "SKU Subtotal Before Discount": 0,
@@ -542,36 +651,35 @@ def format_orders_excel(orders_data, order_details):
             for item in items:
                 rows.append({
                     **base,
-                    "Cancelation/Return Type": item.get("return_type", ""),
-                    "Normal or Pre-order": "Pre-order" if item.get("is_pre_order") else "Normal",
+                    "Cancelation/Return Type": "",  # ada di API Return & Refund terpisah
+                    "Normal or Pre-order": "Pre-order" if item.get("sku_type") == "PRE_ORDER" else "Normal",
                     "SKU ID":       item.get("sku_id", ""),
                     "Seller SKU":   item.get("seller_sku", ""),
                     "Product Name": item.get("product_name", ""),
-                    "Variation":    item.get("variation_name", ""),
-                    "Quantity":     item.get("quantity", 0),
-                    "Sku Quantity of return": item.get("return_quantity", 0),
+                    "Variation":    item.get("sku_name", ""),
+                    "Quantity":     1,  # tiap line_item sekarang = 1 unit, bukan qty gabungan
+                    "Sku Quantity of return": 0,
                     "SKU Unit Original Price":        item.get("original_price", 0),
-                    "SKU Subtotal Before Discount":   item.get("subtotal_before_discount", 0),
+                    "SKU Subtotal Before Discount":   item.get("original_price", 0),
                     "SKU Platform Discount":          item.get("platform_discount", 0),
                     "SKU Seller Discount":            item.get("seller_discount", 0),
-                    "SKU Subtotal After Discount":    item.get("subtotal_after_discount", 0),
-                    "Shipping Fee Seller Discount":   item.get("shipping_fee_seller_discount", 0),
-                    "Shipping Fee Platform Discount": item.get("shipping_fee_platform_discount", 0),
-                    "Distance Shipping Fee":          item.get("distance_shipping_fee", 0),
-                    "Distance Fee":                   item.get("distance_fee", 0),
-                    "Payment platform discount":      item.get("payment_platform_discount", 0),
+                    "SKU Subtotal After Discount":    item.get("sale_price", 0),
+                    "Shipping Fee Seller Discount":   payment.get("shipping_fee_seller_discount", 0),
+                    "Shipping Fee Platform Discount": payment.get("shipping_fee_platform_discount", 0),
+                    "Distance Shipping Fee":          0,
+                    "Distance Fee":                   0,
+                    "Payment platform discount":      payment.get("platform_discount", 0),
                     "Buyer Service Fee":              item.get("buyer_service_fee", 0),
-                    "Handling Fee":                   item.get("handling_fee", 0),
-                    "Shipping Insurance":             item.get("shipping_insurance", 0),
-                    "Item Insurance":                 item.get("item_insurance", 0),
-                    "Weight(kg)":        item.get("weight", 0) / 1000 if item.get("weight") else 0,
-                    "Product Category":  item.get("category_name", ""),
+                    "Handling Fee":                   payment.get("handling_fee", 0),
+                    "Shipping Insurance":             0,
+                    "Item Insurance":                 0,
+                    "Weight(kg)":        0,
+                    "Product Category":  "",
                     "Package ID":        item.get("package_id", ""),
-                    "Checked Status":    item.get("checked_status", ""),
-                    "Checked Marked by": item.get("checked_by", ""),
+                    "Checked Status":    "",
+                    "Checked Marked by": "",
                 })
     return pd.DataFrame(rows)
-
 
 def _sum_path(sku_transactions, *path):
     """
@@ -597,83 +705,69 @@ def _sum_path(sku_transactions, *path):
 
 
 def format_income_excel(transactions):
-    """
-    Sumber data: GET /finance/202309/statements/{id}/statement_transactions
-    (dulu POST /api/v2/finance/settlements/search, sudah tidak ada).
-
-    Semua nama kolom di bawah PERSIS seperti versi lama. Field yang saya
-    tandai "~" adalah padanan terbaik yang bisa saya konfirmasi (bukan 100%
-    nama identik dari TikTok). Field yang ditandai "—" tidak punya padanan
-    di data TikTok Shop (sepertinya ini kolom dari template Tokopedia) jadi
-    akan selalu 0/kosong.
-    """
     rows = []
     for t in transactions:
-        skus = t.get("sku_transactions", [])
-
         rows.append({
             "Order/adjustment ID":                     t.get("order_id", ""),
-            "Type":                                     "Order",
+            "Type":                                     t.get("type", "Order"),
             "Order created time":                       epoch_to_wib(t.get("order_create_time")),
-            "Order settled time":                        epoch_to_wib(t.get("_statement_settled_time")),
+            "Order settled time":                       epoch_to_wib(t.get("_statement_settled_time")),
             "Currency":                                  t.get("currency", "IDR"),
             "Total settlement amount":                   t.get("settlement_amount", 0),
             "Total Revenue":                             t.get("revenue_amount", 0),
-            "Subtotal after seller discounts":           _sum_path(skus, "revenue_breakdown", "subtotal_before_discount_amount")
-                                                          + _sum_path(skus, "revenue_breakdown", "seller_discount_amount"),
-            "Subtotal before discounts":                 _sum_path(skus, "revenue_breakdown", "subtotal_before_discount_amount"),
-            "Seller discounts":                          _sum_path(skus, "revenue_breakdown", "seller_discount_amount"),
-            "Distance item fee from Horizon+ Program":   _sum_path(skus, "revenue_breakdown", "distant_item_fee_amount"),
-            "Refund subtotal after seller discounts":    _sum_path(skus, "revenue_breakdown", "refund_subtotal_before_discount_amount")
-                                                          + _sum_path(skus, "revenue_breakdown", "seller_discount_refund_amount"),
-            "Refund subtotal before seller discounts":   _sum_path(skus, "revenue_breakdown", "refund_subtotal_before_discount_amount"),
-            "Refund of seller discounts":                _sum_path(skus, "revenue_breakdown", "seller_discount_refund_amount"),
-            "Total Fees":                                t.get("fee_and_tax_amount", 0),
-            "Platform commission fee":                   _sum_path(skus, "fee_tax_breakdown", "fee", "platform_commission_amount"),
-            "Pre-order service fee":                     _sum_path(skus, "fee_tax_breakdown", "fee", "pre_order_service_fee_amount"),
-            "Mall service fee":                          _sum_path(skus, "fee_tax_breakdown", "fee", "mall_service_fee_amount"),
-            "Payment Fee":                                _sum_path(skus, "fee_tax_breakdown", "fee", "credit_card_handling_fee_amount"),  # ~
+            "Subtotal after seller discounts":           t.get("after_seller_discounts_subtotal_amount", 0),
+            "Subtotal before discounts":                 t.get("gross_sales_amount", 0),
+            "Seller discounts":                          t.get("seller_discount_amount", 0),
+            "Distance item fee from Horizon+ Program":   0,  # —
+            "Refund subtotal after seller discounts":    t.get("gross_sales_refund_amount", 0),  # ~
+            "Refund subtotal before seller discounts":   t.get("gross_sales_refund_amount", 0),  # ~
+            "Refund of seller discounts":                t.get("seller_discount_refund_amount", 0),
+            "Total Fees":                                t.get("fee_amount", 0),
+            "Platform commission fee":                   t.get("platform_commission_amount", 0),
+            "Pre-order service fee":                     0,  # —
+            "Mall service fee":                          0,  # —
+            "Payment Fee":                                0,  # —
             "Shipping cost":                             t.get("shipping_cost_amount", 0),
-            "Shipping costs passed on to logistics":     _sum_path(skus, "shipping_cost_breakdown", "actual_shipping_fee_amount"),  # ~
-            "Replacement shipping fee":                  _sum_path(skus, "shipping_cost_breakdown", "replacement_shipping_fee_amount"),
-            "Exchange shipping fee":                     _sum_path(skus, "shipping_cost_breakdown", "exchange_shipping_fee_amount"),
-            "Shipping cost borne by platform":           _sum_path(skus, "shipping_cost_breakdown", "supplementary_component", "platform_shipping_fee_discount_amount"),
-            "Shipping cost paid by customer":            _sum_path(skus, "shipping_cost_breakdown", "customer_paid_shipping_fee_amount"),
-            "Refunded shipping cost by customer":        _sum_path(skus, "shipping_cost_breakdown", "supplementary_component", "refunded_customer_shipping_fee_amount"),
-            "Return shipping costs":                     _sum_path(skus, "shipping_cost_breakdown", "return_shipping_fee_amount"),
-            "Shipping cost subsidy":                     _sum_path(skus, "shipping_cost_breakdown", "supplementary_component", "shipping_fee_subsidy_amount"),
-            "Distance shipping fee Horizon+":             _sum_path(skus, "shipping_cost_breakdown", "distant_shipping_fee_amount"),
-            "Affiliate Commission":                      _sum_path(skus, "fee_tax_breakdown", "fee", "affiliate_commission_amount"),
-            "Affiliate partner commission":              _sum_path(skus, "fee_tax_breakdown", "fee", "affiliate_partner_commission_amount"),
-            "Affiliate Shop Ads commission":             _sum_path(skus, "fee_tax_breakdown", "fee", "affiliate_ads_commission_amount"),
+            "Shipping costs passed on to logistics":     t.get("actual_shipping_fee_amount", 0),
+            "Replacement shipping fee":                  0,  # —
+            "Exchange shipping fee":                     0,  # —
+            "Shipping cost borne by platform":           t.get("platform_shipping_fee_discount_amount", 0),
+            "Shipping cost paid by customer":            t.get("customer_paid_shipping_fee_amount", 0),
+            "Refunded shipping cost by customer":        t.get("customer_paid_shipping_fee_refund_amount", 0),
+            "Return shipping costs":                     t.get("return_shipping_fee_amount", 0),
+            "Shipping cost subsidy":                     t.get("shipping_fee_subsidy_amount", 0),
+            "Distance shipping fee Horizon+":            0,  # —
+            "Affiliate Commission":                      t.get("affiliate_commission_amount", 0),
+            "Affiliate partner commission":              t.get("affiliate_partner_commission_amount", 0),
+            "Affiliate Shop Ads commission":              t.get("affiliate_ads_commission_amount", 0),
             "Affiliate Partner shop ads commission":     0,  # —
-            "Shipping Fee Program service fee":          _sum_path(skus, "fee_tax_breakdown", "fee", "shipping_fee_guarantee_service_fee"),
-            "Dynamic commission":                        _sum_path(skus, "fee_tax_breakdown", "fee", "dynamic_commission_amount"),
-            "Bonus cashback service fee":                _sum_path(skus, "fee_tax_breakdown", "fee", "bonus_cashback_service_fee_amount"),
-            "LIVE Specials service fee":                 _sum_path(skus, "fee_tax_breakdown", "fee", "live_specials_fee_amount"),
-            "Voucher Xtra service fee":                  _sum_path(skus, "fee_tax_breakdown", "fee", "voucher_xtra_service_fee_amount"),
-            "Order processing fee":                      _sum_path(skus, "fee_tax_breakdown", "fee", "fee_per_item_sold_amount"),  # ~
-            "EAMS Program service fee":                  _sum_path(skus, "fee_tax_breakdown", "fee", "epr_pob_service_fee_amount"),  # ~
-            "Flash Sale service fee":                    _sum_path(skus, "fee_tax_breakdown", "fee", "flash_sales_service_fee_amount"),
-            "Dilayani Tokopedia fee":                    0,  # — (kolom Tokopedia, tidak ada di TikTok Shop)
+            "Shipping Fee Program service fee":          0,  # —
+            "Dynamic commission":                        0,  # —
+            "Bonus cashback service fee":                0,  # —
+            "LIVE Specials service fee":                 0,  # —
+            "Voucher Xtra service fee":                  0,  # —
+            "Order processing fee":                      0,  # —
+            "EAMS Program service fee":                  0,  # —
+            "Flash Sale service fee":                    0,  # —
+            "Dilayani Tokopedia fee":                    0,  # —
             "Dilayani Tokopedia handling fee":           0,  # —
-            "PayLater program fee":                      _sum_path(skus, "fee_tax_breakdown", "fee", "seller_paylater_handling_fee_amount"),
+            "PayLater program fee":                      0,  # —
             "Campaign resource fee":                     0,  # —
-            "Installation service fee":                  _sum_path(skus, "fee_tax_breakdown", "fee", "installation_service_fee"),
-            "Article 22 Income Tax withheld":            _sum_path(skus, "fee_tax_breakdown", "tax", "pit_amount"),  # ~
-            "Platform special service fee":              _sum_path(skus, "fee_tax_breakdown", "fee", "platform_special_service_fee_amount"),
-            "GMV Max ad fee":                            _sum_path(skus, "fee_tax_breakdown", "fee", "gmv_max_ad_fee_amount"),
-            "Adjustment amount":                         0,  # —
+            "Installation service fee":                  0,  # —
+            "Article 22 Income Tax withheld":            t.get("pit_amount", 0),  # ~ (belum pasti ini PPh 22)
+            "Platform special service fee":              0,  # —
+            "GMV Max ad fee":                            0,  # —
+            "Adjustment amount":                         t.get("adjustment_amount", 0),
             "Related order ID":                          "",  # —
-            "Customer payment":                          0,  # —
-            "Customer refund":                           0,  # —
-            "Seller co-funded voucher discount":         _sum_path(skus, "fee_tax_breakdown", "fee", "cofunded_promotion_service_fee_amount"),  # ~
+            "Customer payment":                          t.get("customer_payment_amount", 0),
+            "Customer refund":                           t.get("customer_refund_amount", 0),
+            "Seller co-funded voucher discount":         0,  # —
             "Refund of seller co-funded voucher":        0,  # —
-            "Platform discounts":                        0,  # —
-            "Refund of platform discounts":              0,  # —
-            "Platform co-funded voucher discounts":      _sum_path(skus, "fee_tax_breakdown", "fee", "cofunded_creator_bonus_amount"),  # ~
+            "Platform discounts":                        t.get("platform_discount_amount", 0),
+            "Refund of platform discounts":              t.get("platform_discount_refund_amount", 0),
+            "Platform co-funded voucher discounts":      0,  # —
             "Refund of platform co-funded voucher":      0,  # —
-            "Seller shipping cost discount":             _sum_path(skus, "shipping_cost_breakdown", "supplementary_component", "seller_shipping_fee_discount_amount"),
+            "Seller shipping cost discount":             t.get("shipping_cost_discount_amount", 0),  # ~
             "Estimated package weight (g)":              0,  # —
             "Actual package weight (g)":                 0,  # —
             "Shopping center items":                     "",  # —
@@ -995,7 +1089,7 @@ if selected_shop:
                 orders = get_all_orders(access_token, shop_cipher, start_utc, end_utc)
             if orders:
                 st.info(f"📋 {len(orders)} pesanan ditemukan, mengambil detail...")
-                order_ids = [o.get("order_id") for o in orders]
+                order_ids = [o.get("id") for o in orders]
                 progress  = st.progress(0)
                 details   = get_order_details_batch(access_token, shop_cipher, order_ids, progress_bar=progress)
                 df = format_orders_excel(orders, details)
