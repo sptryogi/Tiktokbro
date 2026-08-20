@@ -3,3 +3,4 @@ supabase
 pandas
 requests
 pytz
+openpyxl
