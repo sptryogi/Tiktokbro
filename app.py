@@ -779,20 +779,23 @@ def format_income_excel(transactions):
 def format_product_excel(products_data):
     rows = []
     for p in products_data:
-        sales = p.get("sales_data", {})
-        ads   = p.get("ad_data", {})
-        gross = sales.get("gross_revenue", 0)
-        cost  = ads.get("cost", 0)
-        orders = sales.get("orders", 0)
+        skus = p.get("skus", [])
+        prices = [float(s.get("price", {}).get("tax_exclusive_price", 0) or 0) for s in skus]
+        stock  = sum(inv.get("quantity", 0) for s in skus for inv in s.get("inventory", []))
+        currency = skus[0].get("price", {}).get("currency", "IDR") if skus else "IDR"
+
         rows.append({
-            "ID produk":       p.get("product_id", ""),
-            "Nama produk":     p.get("product_name", ""),
-            "Pesanan SKU":     p.get("sku_count", 0),
-            "Pendapatan kotor": gross,
-            "Biaya":           cost,
-            "Biaya per pesanan": cost / orders if orders else 0,
-            "ROI":             round((gross - cost) / cost, 2) if cost else 0,
-            "Mata uang":       p.get("currency", "IDR"),
+            "ID produk":         p.get("id", ""),
+            "Nama produk":       p.get("title", ""),
+            "Status":            p.get("status", ""),
+            "Jumlah SKU":        len(skus),
+            "Total Stok":        stock,
+            "Harga Terendah":    min(prices) if prices else 0,
+            "Harga Tertinggi":   max(prices) if prices else 0,
+            "Mata uang":         currency,
+            "Wilayah Jual":      ", ".join(p.get("sales_regions", [])),
+            "Dibuat":            epoch_to_wib(p.get("create_time")),
+            "Diperbarui":        epoch_to_wib(p.get("update_time")),
         })
     return pd.DataFrame(rows)
 
