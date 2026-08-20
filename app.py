@@ -207,7 +207,12 @@ def make_tiktok_request(
     url = f"{BASE_URL}{endpoint}"
     try:
         if method.upper() == "POST":
-            resp = requests.post(url, params=params, json=body, headers=headers, timeout=30)
+            body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False) if body else None
+            resp = requests.post(
+                url, params=params,
+                data=body_str.encode("utf-8") if body_str else None,
+                headers=headers, timeout=30
+            )
         else:
             resp = requests.get(url, params=params, headers=headers, timeout=30)
         return resp.json()
@@ -425,7 +430,7 @@ def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
             "create_time_ge": int(start_time.timestamp()),
             "create_time_lt": int(end_time.timestamp()),
         }
-        query = {"page_size": 50, "version": "202405"}
+        query = {"page_size": 50, "version": "202410"}
         if page_token:
             query["page_token"] = page_token
 
