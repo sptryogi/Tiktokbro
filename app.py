@@ -151,12 +151,12 @@ def get_authorized_shops(access_token: str) -> list:
         "app_key":   APP_KEY,
         "timestamp": timestamp,
     }
-    params["sign"]         = generate_signature(endpoint, params, APP_SECRET, None)
-    params["access_token"] = access_token
+    params["sign"] = generate_signature(endpoint, params, APP_SECRET, None)
+    headers = {"x-tts-access-token": access_token}
 
     url = f"{BASE_URL}{endpoint}"
     try:
-        resp = requests.get(url, params=params, timeout=30)
+        resp = requests.get(url, params=params, headers=headers, timeout=30)
         result = resp.json()
         st.write("🔍 Debug authorized shops response:", result)
         if result.get("code") == 0:
@@ -392,7 +392,7 @@ def get_statement_transactions(access_token, shop_cipher, statement_id):
 def get_products(access_token, shop_cipher):
     all_products, page_token = [], None
     for _ in range(100):
-        body = {"status": 1}
+        body = {"status": "1"}
         query = {"page_size": 50}
         if page_token:
             query["page_token"] = page_token
