@@ -201,8 +201,8 @@ def make_tiktok_request(
 
     headers = {
         "Content-Type": "application/json",
+        "x-tts-access-token": access_token,
     }
-    params["access_token"] = access_token  # dikecualikan dari sign, aman ditaruh di query
 
     url = f"{BASE_URL}{endpoint}"
     try:
@@ -425,7 +425,7 @@ def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
             "create_time_ge": int(start_time.timestamp()),
             "create_time_lt": int(end_time.timestamp()),
         }
-        query = {"page_size": 50}
+        query = {"page_size": 50, "version": "202405"}
         if page_token:
             query["page_token"] = page_token
 
