@@ -422,6 +422,71 @@ def get_products(access_token, shop_cipher):
             break
     return all_products
 
+def get_order_finance_transactions(access_token, shop_cipher, order_id):
+    """GET /finance/{version}/orders/{order_id}/statement_transactions — detail 1 order,
+    termasuk sku_transactions[] (produk, GMV Max ad fee, dst)."""
+    result = make_tiktok_request(
+        f"/finance/202309/orders/{order_id}/statement_transactions",
+        access_token, shop_cipher,
+        method="GET",
+    )
+    if result.get("code") == 0:
+        return result.get("data", {})
+    return {}
+
+
+def get_product_ads_performance(access_token, shop_cipher, start_time, end_time, progress_bar=None):
+    """Rekonstruksi performa iklan per produk dari data finance per-order
+    (TikTok Shop belum punya endpoint dashboard iklan langsung)."""
+    orders = get_all_orders(access_token, shop_cipher, start_time, end_time)
+    per_product = {}
+
+    for idx, o in enumerate(orders):
+        order_id = o.get("id")
+        if order_id:
+            detail = get_order_finance_transactions(access_token, shop_cipher, order_id)
+            currency = detail.get("currency", "IDR")
+            for sku in detail.get("sku_transactions", []):
+                key = sku.get("product_name") or "Unknown"
+                fee = (sku.get("fee_tax_breakdown") or {}).get("fee") or {}
+                ad_cost    = abs(float(fee.get("gmv_max_ad_fee_amount", 0) or 0))
+                revenue    = float(sku.get("revenue_amount", 0) or 0)
+                settlement = float(sku.get("settlement_amount", 0) or 0)
+                qty        = sku.get("quantity", 0) or 0
+
+                row = per_product.setdefault(key, {
+                    "revenue": 0, "ad_cost": 0, "settlement": 0,
+                    "orders": 0, "qty": 0, "currency": currency,
+                })
+                row["revenue"]    += revenue
+                row["ad_cost"]    += ad_cost
+                row["settlement"] += settlement
+                row["orders"]     += 1
+                row["qty"]        += qty
+
+        if progress_bar and orders:
+            progress_bar.progress((idx + 1) / len(orders))
+
+    return per_product
+
+
+def format_product_ads_excel(per_product):
+    rows = []
+    for name, d in per_product.items():
+        cost = d["ad_cost"]
+        rows.append({
+            "Nama produk":            name,
+            "Pesanan":                d["orders"],
+            "Kuantitas Terjual":      d["qty"],
+            "Pendapatan kotor":       d["revenue"],
+            "Biaya Iklan (GMV Max)":  cost,
+            "Biaya per pesanan":      cost / d["orders"] if d["orders"] else 0,
+            "ROI":                    round((d["revenue"] - cost) / cost, 2) if cost else 0,
+            "Settlement Amount":      d["settlement"],
+            "Mata uang":              d["currency"],
+        })
+    return pd.DataFrame(rows)
+    
 
 def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
     """
@@ -1130,21 +1195,23 @@ if selected_shop:
     # ── TAB 4: PRODUCTS ────────────────────
     with tab4:
         st.subheader("Data Produk (Iklan)")
+        st.caption(f"WIB: {start_date:%d %b %Y %H:%M} — {end_date:%d %b %Y %H:%M}")
         if st.button("🔄 Tarik & Download", key="btn_products", type="primary"):
-            with st.spinner("Mengambil data produk..."):
-                products = get_products(access_token, shop_cipher)
-            if products:
-                df = format_product_excel(products)
-                st.success(f"✅ {len(products)} produk")
+            with st.spinner("Mengambil data performa iklan per produk..."):
+                progress = st.progress(0)
+                per_product = get_product_ads_performance(access_token, shop_cipher, start_utc, end_utc, progress_bar=progress)
+            if per_product:
+                df = format_product_ads_excel(per_product)
+                st.success(f"✅ {len(df)} produk")
                 st.dataframe(df, use_container_width=True)
                 st.download_button(
                     "📥 Download Excel Produk",
                     to_excel_download(df),
-                    f"Product_Data_{shop_cipher}_{now:%Y%m%d}.xlsx",
+                    f"Product_Data_{shop_cipher}_{date_suffix}.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             else:
-                st.info("Tidak ada produk aktif atau scope belum diaktifkan.")
+                st.info("Tidak ada data produk/iklan untuk periode ini.")
 
 else:
     st.info("👈 Silakan hubungkan toko terlebih dahulu melalui sidebar.")
