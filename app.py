@@ -489,22 +489,19 @@ def format_product_ads_excel(per_product):
     
 
 def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
-    """
-    FIX: kategori & versi endpoint affiliate berubah. Minimal version 202405,
-    dan kategorinya 'affiliate_seller' (bukan 'affiliate').
-    """
     all_orders, page_token = [], None
     for _ in range(100):
         body = {
             "create_time_ge": int(start_time.timestamp()),
             "create_time_lt": int(end_time.timestamp()),
         }
-        query = {"page_size": 50, "version": "202410"}
+        # PASTIKAN parameter query ini sesuai dokumentasi TikTok Shop Affiliate
+        query = {"page_size": 50} 
         if page_token:
             query["page_token"] = page_token
 
         result = make_tiktok_request(
-            "/affiliate_seller/202405/orders/search",
+            "/affiliate_seller/202405/orders/search", # Pastikan path ini benar
             access_token, shop_cipher,
             method="POST",
             body=body,
@@ -513,13 +510,14 @@ def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
 
         if result.get("code") == 0:
             data   = result.get("data", {})
+            # TikTok API mengembalikan key 'orders' atau 'order_list'
             orders = data.get("orders") or data.get("order_list") or []
             all_orders.extend(orders)
             page_token = data.get("next_page_token")
             if not page_token or not orders:
                 break
         else:
-            st.warning(f"Affiliate API: {result.get('message')}")
+            st.warning(f"Affiliate API Error: {result.get('message')}")
             st.json(result)
             break
     return all_orders
