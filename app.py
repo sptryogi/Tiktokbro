@@ -4,12 +4,13 @@ import time
 import hmac
 import hashlib
 import pandas as pd
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dtime
 from supabase import create_client, Client
 import json
 from io import BytesIO
 import urllib.parse
 
+WIB = timezone(timedelta(hours=7))
 # =================================================================
 # PERUBAHAN UTAMA DI FILE INI (ringkasan):
 # 1. generate_signature() sekarang menyertakan REQUEST PATH — ini akar
@@ -1080,39 +1081,33 @@ with st.sidebar:
     st.subheader("📅 Filter Waktu (WIB)")
     time_preset = st.radio("Rentang", ["Kemarin", "7 Hari", "30 Hari", "Custom"], horizontal=True)
 
-    now = datetime.now(timezone.utc)  # UTC aktual
+    now_wib = datetime.now(WIB)
+    today0  = now_wib.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Untuk "Kemarin" dalam WIB:
     if time_preset == "Kemarin":
-        now_wib = now + timedelta(hours=7)  # konversi ke WIB dulu
-        start_wib = now_wib.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-        end_wib   = start_wib + timedelta(days=1)
-        start_date = start_wib  # tampil ke user dalam WIB
-        end_date   = end_wib
+        start_date = today0 - timedelta(days=1)                 # kemarin 00:00:00
+        end_date   = today0 - timedelta(seconds=1)              # kemarin 23:59:59
     elif time_preset == "7 Hari":
-        now_wib = now + timedelta(hours=7)
-        start_date = now_wib - timedelta(days=7)
-        end_date   = now_wib
+        this_monday = today0 - timedelta(days=today0.weekday())
+        start_date  = this_monday - timedelta(days=7)           # Senin minggu lalu 00:00:00
+        end_date    = this_monday - timedelta(seconds=1)        # Minggu 23:59:59
     elif time_preset == "30 Hari":
-        now_wib = now + timedelta(hours=7)
-        start_date = now_wib - timedelta(days=30)
-        end_date   = now_wib
-
+        start_date = today0 - timedelta(days=30)                # 30 hari penuh
+        end_date   = today0 - timedelta(seconds=1)              # sampai kemarin 23:59:59
     else:
         col1, col2 = st.columns(2)
         with col1:
-            sd = st.date_input("Dari", now.date() - timedelta(days=7))
-            st_time = st.time_input("Jam Mulai", datetime.strptime("00:00", "%H:%M").time())
+            sd = st.date_input("Dari", (today0 - timedelta(days=7)).date())
         with col2:
-            ed = st.date_input("Sampai", now.date())
-            et_time = st.time_input("Jam Selesai", datetime.strptime("23:59", "%H:%M").time())
-        start_date = datetime.combine(sd, st_time)
-        end_date   = datetime.combine(ed, et_time)
+            ed = st.date_input("Sampai", (today0 - timedelta(days=1)).date())
+        start_date = datetime.combine(sd, dtime(0, 0, 0),   tzinfo=WIB)
+        end_date   = datetime.combine(ed, dtime(23, 59, 59), tzinfo=WIB)
 
-    # Konversi WIB → UTC untuk API (WIB = UTC+7)
-    start_utc = start_date - timedelta(hours=7)
-    end_utc   = end_date   - timedelta(hours=7)
-    st.info(f"🌍 UTC: {start_utc:%Y-%m-%d %H:%M} — {end_utc:%Y-%m-%d %H:%M}")
+    # Ke UTC untuk API. End dibuat eksklusif (+1 detik) karena API pakai *_lt
+    start_utc = start_date.astimezone(timezone.utc)
+    end_utc   = (end_date + timedelta(seconds=1)).astimezone(timezone.utc)
+    st.info(f"🕒 WIB: {start_date:%Y-%m-%d %H:%M} — {end_date:%Y-%m-%d %H:%M}\n\n"
+            f"🌍 UTC: {start_utc:%Y-%m-%d %H:%M} — {end_utc:%Y-%m-%d %H:%M}")
     st.markdown("---")
 
     if st.button("🔗 Hubungkan Toko Baru", use_container_width=True):
