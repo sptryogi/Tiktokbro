@@ -411,6 +411,72 @@ def get_product_title(access_token, shop_cipher, product_id, cache):
                                 access_token, shop_cipher, method="GET")
         cache[product_id] = (r.get("data") or {}).get("title", "") if r.get("code") == 0 else ""
     return cache[product_id]
+
+def get_product_info(access_token, shop_cipher, product_id, cache):
+    """Judul, berat (kg), kategori leaf dari Get Product detail. Pakai cache -> 1 produk 1 panggilan."""
+    if not product_id:
+        return {}
+    if product_id not in cache:
+        r = make_tiktok_request(f"/product/202309/products/{product_id}",
+                                access_token, shop_cipher, method="GET")
+        info = {}
+        if r.get("code") == 0:
+            d = r.get("data") or {}
+            w = d.get("package_weight") or {}
+            try:
+                wv = float(w.get("value") or 0)
+            except (TypeError, ValueError):
+                wv = 0
+            wkg = wv * 0.4536 if (w.get("unit") or "").upper() == "POUND" else wv
+            chains = d.get("category_chains") or []
+            leaf = next((c for c in chains if c.get("is_leaf")), chains[-1] if chains else {})
+            info = {"title": d.get("title", ""), "weight_kg": round(wkg, 3),
+                    "category": leaf.get("local_name", "")}
+        cache[product_id] = info
+    return cache[product_id]
+
+
+def get_product_title(access_token, shop_cipher, product_id, cache):   # menggantikan versi sebelumnya
+    return get_product_info(access_token, shop_cipher, product_id, cache).get("title", "")
+
+
+def get_returns_by_orders(access_token, shop_cipher, order_ids, progress_bar=None):
+    """order_id -> {'refund': total refund, 'type': jenis, 'sku_qty': {sku_id: jumlah unit diretur}}"""
+    result_map, shown = {}, False
+    ids = [i for i in order_ids if i]
+    chunks = [ids[i:i + 20] for i in range(0, len(ids), 20)]
+    for idx, chunk in enumerate(chunks):
+        page_token = None
+        for _ in range(20):
+            query = {"page_size": 50}
+            if page_token:
+                query["page_token"] = page_token
+            res = make_tiktok_request("/return_refund/202309/returns/search",
+                                      access_token, shop_cipher,
+                                      method="POST", body={"order_ids": chunk}, **query)
+            if res.get("code") != 0:
+                st.warning(f"Return API: {res.get('code')} {res.get('message')}")
+                break
+            data = res.get("data") or {}
+            rets = data.get("return_orders") or data.get("returns") or []
+            if rets and not shown:
+                st.write("🔍 Debug 1 return:", rets[0]); shown = True   # hapus setelah cocok
+            for r in rets:
+                status = (r.get("return_status") or r.get("status") or "").upper()
+                if "REJECT" in status or "CANCEL" in status:
+                    continue
+                m = result_map.setdefault(r.get("order_id"), {"refund": 0.0, "type": "", "sku_qty": {}})
+                ra = r.get("refund_amount") or {}
+                m["refund"] += float(ra.get("refund_total") or 0)
+                m["type"] = r.get("return_type") or m["type"]
+                for li in r.get("return_line_items") or []:
+                    m["sku_qty"][li.get("sku_id")] = m["sku_qty"].get(li.get("sku_id"), 0) + 1
+            page_token = data.get("next_page_token")
+            if not page_token or not rets:
+                break
+        if progress_bar:
+            progress_bar.progress((idx + 1) / len(chunks))
+    return result_map
     
 def get_products(access_token, shop_cipher):
     all_products, page_token = [], None
@@ -668,14 +734,29 @@ def _district(district_info, level_name):
             return d.get("address_name", "")
     return ""
 
-
-def format_orders_excel(orders_data, order_details):
+def _merge_items(items):
+    """Gabungkan line_item dengan sku_id & package yang sama jadi 1 baris + qty."""
+    out = {}
+    for it in items:
+        k = (it.get("sku_id"), it.get("package_id"))
+        m = out.setdefault(k, {**it, "_qty": 0, "_orig": 0.0, "_plat": 0.0,
+                               "_sell": 0.0, "_sale": 0.0, "_bsf": 0.0})
+        m["_qty"]  += 1
+        m["_orig"] += float(it.get("original_price") or 0)
+        m["_plat"] += float(it.get("platform_discount") or 0)
+        m["_sell"] += float(it.get("seller_discount") or 0)
+        m["_sale"] += float(it.get("sale_price") or 0)
+        m["_bsf"]  += float(it.get("buyer_service_fee") or 0)
+    return list(out.values())
+    
+def format_orders_excel(orders_data, order_details, returns=None, products=None):
     rows = []
     details_dict = {d.get("id"): d for d in order_details if d}
 
     for order in orders_data:
         o = {**order, **details_dict.get(order.get("id"), {})}  # detail nimpa order kalau ada
 
+        ret = (returns or {}).get(o.get("id"), {})
         payment    = o.get("payment", {})
         recipient  = o.get("recipient_address", {})
         district   = recipient.get("district_info", [])
@@ -687,16 +768,16 @@ def format_orders_excel(orders_data, order_details):
             "Order Substatus":       "",  # tidak ada di data TikTok
             "Shipping Fee After Discount":   payment.get("shipping_fee", 0),
             "Original Shipping Fee":         payment.get("original_shipping_fee", 0),
-            "Order Refund Amount":           0,  # ada di API Return & Refund terpisah, bukan di order
+            "Order Refund Amount": ret.get("refund", 0),
             "Order Amount":                  payment.get("total_amount", 0),
             "Created Time":          epoch_to_wib(o.get("create_time")),
             "Paid Time":             epoch_to_wib(o.get("paid_time")),
             "RTS Time":              epoch_to_wib(o.get("rts_time")),
-            "Shipped Time":          epoch_to_wib(o.get("shipped_time")),
-            "Delivered Time":        epoch_to_wib(o.get("delivered_time")),
-            "Cancelled Time":        epoch_to_wib(o.get("cancelled_time")),
-            "Cancel By":             o.get("cancel_user", ""),
-            "Cancel Reason":         o.get("cancel_reason", ""),
+            "Shipped Time":    epoch_to_wib(o.get("collection_time")),      # sebelumnya shipped_time
+            "Delivered Time":  epoch_to_wib(o.get("delivery_time")),        # sebelumnya delivered_time
+            "Cancelled Time":  epoch_to_wib(o.get("cancel_time")),          # sebelumnya cancelled_time
+            "Cancel By":       o.get("cancellation_initiator", ""),         # sebelumnya cancel_user
+            "Cancel Reason":   o.get("cancel_reason", ""),
             "Fulfillment Type":      o.get("fulfillment_type", ""),
             "Warehouse Name":        o.get("warehouse_id", ""),  # cuma ID, nama gudang nggak tersedia
             "Tracking ID":           o.get("tracking_number", ""),
@@ -709,9 +790,9 @@ def format_orders_excel(orders_data, order_details):
             "Zipcode":               recipient.get("postal_code", ""),
             "Country":               _district(district, "Country"),
             "Province":              _district(district, "province"),
-            "Regency and City":      _district(district, "regency"),
+            "Regency and City": _district(district, "city") or _district(district, "regency"),
             "Districts":             _district(district, "Sub-district"),
-            "Villages":              _district(district, "Village"),
+            "Villages":        _district(district, "Urban Community") or _district(district, "Village"),
             "Detail Address":        recipient.get("address_detail", ""),
             "Additional address information": recipient.get("full_address", ""),
             "Payment Method":        o.get("payment_method_name", ""),
@@ -737,38 +818,50 @@ def format_orders_excel(orders_data, order_details):
                 "Checked Status": "", "Checked Marked by": "",
             })
         else:
-            for item in items:
+            for item in _merge_items(items):
+                pinfo = (products or {}).get(item.get("product_id"), {})
                 rows.append({
                     **base,
-                    "Cancelation/Return Type": "",  # ada di API Return & Refund terpisah
+                    "Cancelation/Return Type": "Cancel" if o.get("status") == "CANCELLED" else ret.get("type", ""),
                     "Normal or Pre-order": "Pre-order" if item.get("sku_type") == "PRE_ORDER" else "Normal",
                     "SKU ID":       item.get("sku_id", ""),
                     "Seller SKU":   item.get("seller_sku", ""),
                     "Product Name": item.get("product_name", ""),
                     "Variation":    item.get("sku_name", ""),
-                    "Quantity":     1,  # tiap line_item sekarang = 1 unit, bukan qty gabungan
-                    "Sku Quantity of return": 0,
-                    "SKU Unit Original Price":        item.get("original_price", 0),
-                    "SKU Subtotal Before Discount":   item.get("original_price", 0),
-                    "SKU Platform Discount":          item.get("platform_discount", 0),
-                    "SKU Seller Discount":            item.get("seller_discount", 0),
-                    "SKU Subtotal After Discount":    item.get("sale_price", 0),
+                    "Quantity":                     item["_qty"],
+                    "Sku Quantity of return":  ret.get("sku_qty", {}).get(item.get("sku_id"), 0),
+                    "SKU Unit Original Price":      item["_orig"] / item["_qty"],
+                    "SKU Subtotal Before Discount": item["_orig"],
+                    "SKU Platform Discount":        item["_plat"],
+                    "SKU Seller Discount":          item["_sell"],
+                    "SKU Subtotal After Discount":  item["_sale"],
                     "Shipping Fee Seller Discount":   payment.get("shipping_fee_seller_discount", 0),
                     "Shipping Fee Platform Discount": payment.get("shipping_fee_platform_discount", 0),
                     "Distance Shipping Fee":          0,
                     "Distance Fee":                   0,
                     "Payment platform discount":      payment.get("platform_discount", 0),
-                    "Buyer Service Fee":              item.get("buyer_service_fee", 0),
+                    "Buyer Service Fee":            item["_bsf"],
                     "Handling Fee":                   payment.get("handling_fee", 0),
                     "Shipping Insurance":             0,
                     "Item Insurance":                 0,
-                    "Weight(kg)":        0,
-                    "Product Category":  "",
+                    "Weight(kg)":              pinfo.get("weight_kg", 0),
+                    "Product Category":        pinfo.get("category", ""),
                     "Package ID":        item.get("package_id", ""),
                     "Checked Status":    "",
                     "Checked Marked by": "",
                 })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    money_cols = [
+        "Shipping Fee After Discount", "Original Shipping Fee", "Order Refund Amount", "Order Amount",
+        "SKU Unit Original Price", "SKU Subtotal Before Discount", "SKU Platform Discount",
+        "SKU Seller Discount", "SKU Subtotal After Discount", "Shipping Fee Seller Discount",
+        "Shipping Fee Platform Discount", "Distance Shipping Fee", "Distance Fee",
+        "Payment platform discount", "Buyer Service Fee", "Handling Fee",
+        "Shipping Insurance", "Item Insurance", "Weight(kg)",
+    ]
+    for c in money_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    return df
 
 def _sum_path(sku_transactions, *path):
     """
@@ -1218,7 +1311,12 @@ if selected_shop:
                 order_ids = [o.get("id") for o in orders]
                 progress  = st.progress(0)
                 details   = get_order_details_batch(access_token, shop_cipher, order_ids, progress_bar=progress)
-                df = format_orders_excel(orders, details)
+                with st.spinner("Mengambil data retur & info produk..."):
+                    returns = get_returns_by_orders(access_token, shop_cipher, order_ids)
+                    pcache = {}
+                    for pid in {li.get("product_id") for d in details for li in d.get("line_items", [])}:
+                        get_product_info(access_token, shop_cipher, pid, pcache)
+                df = format_orders_excel(orders, details, returns, pcache)
                 st.success(f"✅ {len(df)} baris data diproses")
                 st.dataframe(df.head(10), use_container_width=True)
                 st.download_button(
