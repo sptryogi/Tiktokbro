@@ -220,6 +220,18 @@ def make_tiktok_request(
     except Exception as e:
         return {"code": -1, "message": str(e)}
 
+_make_tiktok_request_once = make_tiktok_request
+
+def make_tiktok_request(*args, **kwargs):
+    """Retry otomatis kalau TikTok balas internal error / timeout."""
+    result = {}
+    for attempt in range(4):
+        result = _make_tiktok_request_once(*args, **kwargs)
+        if result.get("code") not in (36009003, -1):
+            return result
+        time.sleep(1.5 * (attempt + 1))
+    return result
+    
 
 # ─────────────────────────────────────────────
 # WAKTU HELPER
@@ -780,75 +792,99 @@ def _sum_path(sku_transactions, *path):
                 pass
     return total
 
+def _deep(node, *names, default=0):
+    """Cari salah satu key (nama alternatif) di seluruh nested dict, level paling dangkal dulu."""
+    queue = [node]
+    while queue:
+        cur = queue.pop(0)
+        if isinstance(cur, dict):
+            for n in names:
+                v = cur.get(n)
+                if v not in (None, "") and not isinstance(v, (dict, list)):
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        pass
+            queue.extend(v for v in cur.values() if isinstance(v, (dict, list)))
+        elif isinstance(cur, list):
+            queue.extend(cur)
+    return default
 
 def format_income_excel(transactions):
     rows = []
     for t in transactions:
+        g = lambda *n: _deep(t, *n)
+
+        gross   = g("subtotal_before_discount_amount", "gross_sales_amount")
+        sdisc   = g("seller_discount_amount")
+        r_gross = g("refund_subtotal_before_discount_amount", "gross_sales_refund_amount")
+        r_sdisc = g("seller_discount_refund_amount")
+
         rows.append({
-            "Order/adjustment ID":                     t.get("order_id", ""),
-            "Type":                                     t.get("type", "Order"),
-            "Order created time":                       epoch_to_wib(t.get("order_create_time")),
-            "Order settled time":                       epoch_to_wib(t.get("_statement_settled_time")),
-            "Currency":                                  t.get("currency", "IDR"),
-            "Total settlement amount":                   t.get("settlement_amount", 0),
-            "Total Revenue":                             t.get("revenue_amount", 0),
-            "Subtotal after seller discounts":           t.get("after_seller_discounts_subtotal_amount", 0),
-            "Subtotal before discounts":                 t.get("gross_sales_amount", 0),
-            "Seller discounts":                          t.get("seller_discount_amount", 0),
-            "Distance item fee from Horizon+ Program":   0,  # —
-            "Refund subtotal after seller discounts":    t.get("gross_sales_refund_amount", 0),  # ~
-            "Refund subtotal before seller discounts":   t.get("gross_sales_refund_amount", 0),  # ~
-            "Refund of seller discounts":                t.get("seller_discount_refund_amount", 0),
-            "Total Fees":                                t.get("fee_amount", 0),
-            "Platform commission fee":                   t.get("platform_commission_amount", 0),
-            "Pre-order service fee":                     0,  # —
-            "Mall service fee":                          0,  # —
-            "Payment Fee":                                0,  # —
-            "Shipping cost":                             t.get("shipping_cost_amount", 0),
-            "Shipping costs passed on to logistics":     t.get("actual_shipping_fee_amount", 0),
-            "Replacement shipping fee":                  0,  # —
-            "Exchange shipping fee":                     0,  # —
-            "Shipping cost borne by platform":           t.get("platform_shipping_fee_discount_amount", 0),
-            "Shipping cost paid by customer":            t.get("customer_paid_shipping_fee_amount", 0),
-            "Refunded shipping cost by customer":        t.get("customer_paid_shipping_fee_refund_amount", 0),
-            "Return shipping costs":                     t.get("return_shipping_fee_amount", 0),
-            "Shipping cost subsidy":                     t.get("shipping_fee_subsidy_amount", 0),
-            "Distance shipping fee Horizon+":            0,  # —
-            "Affiliate Commission":                      t.get("affiliate_commission_amount", 0),
-            "Affiliate partner commission":              t.get("affiliate_partner_commission_amount", 0),
-            "Affiliate Shop Ads commission":              t.get("affiliate_ads_commission_amount", 0),
-            "Affiliate Partner shop ads commission":     0,  # —
-            "Shipping Fee Program service fee":          0,  # —
-            "Dynamic commission":                        0,  # —
-            "Bonus cashback service fee":                0,  # —
-            "LIVE Specials service fee":                 0,  # —
-            "Voucher Xtra service fee":                  0,  # —
-            "Order processing fee":                      0,  # —
-            "EAMS Program service fee":                  0,  # —
-            "Flash Sale service fee":                    0,  # —
-            "Dilayani Tokopedia fee":                    0,  # —
-            "Dilayani Tokopedia handling fee":           0,  # —
-            "PayLater program fee":                      0,  # —
-            "Campaign resource fee":                     0,  # —
-            "Installation service fee":                  0,  # —
-            "Article 22 Income Tax withheld":            t.get("pit_amount", 0),  # ~ (belum pasti ini PPh 22)
-            "Platform special service fee":              0,  # —
-            "GMV Max ad fee":                            0,  # —
-            "Adjustment amount":                         t.get("adjustment_amount", 0),
-            "Related order ID":                          "",  # —
-            "Customer payment":                          t.get("customer_payment_amount", 0),
-            "Customer refund":                           t.get("customer_refund_amount", 0),
-            "Seller co-funded voucher discount":         0,  # —
-            "Refund of seller co-funded voucher":        0,  # —
-            "Platform discounts":                        t.get("platform_discount_amount", 0),
-            "Refund of platform discounts":              t.get("platform_discount_refund_amount", 0),
-            "Platform co-funded voucher discounts":      0,  # —
-            "Refund of platform co-funded voucher":      0,  # —
-            "Seller shipping cost discount":             t.get("shipping_cost_discount_amount", 0),  # ~
-            "Estimated package weight (g)":              0,  # —
-            "Actual package weight (g)":                 0,  # —
-            "Shopping center items":                     "",  # —
-            "Order Source":                              "",  # —
+            "Order/adjustment ID":   str(t.get("order_id") or t.get("adjustment_id") or t.get("id") or ""),
+            "Type":                  t.get("type", "ORDER"),
+            "Order created time":    epoch_to_wib(t.get("order_create_time")),
+            "Order settled time":    epoch_to_wib(t.get("_statement_settled_time")),
+            "Currency":              t.get("currency", "IDR"),
+            "Total settlement amount":  g("settlement_amount"),
+            "Total Revenue":            g("revenue_amount"),
+            "Subtotal after seller discounts":  g("subtotal_after_seller_discount_amount", "net_sales_amount") or (gross - abs(sdisc)),
+            "Subtotal before discounts":        gross,
+            "Seller discounts":                 sdisc,
+            "Distance item fee from Horizon+ Program": 0,
+            "Refund subtotal after seller discounts":  g("refund_subtotal_after_seller_discount_amount") or (r_gross - abs(r_sdisc)),
+            "Refund subtotal before seller discounts": r_gross,
+            "Refund of seller discounts":       r_sdisc,
+            "Total Fees":                       g("fee_tax_amount", "fee_amount"),
+            "Platform commission fee":          g("platform_commission_amount"),
+            "Pre-order service fee":            g("pre_order_service_fee_amount"),
+            "Mall service fee":                 g("mall_service_fee_amount"),
+            "Payment Fee":                      g("transaction_fee_amount", "payment_fee_amount"),
+            "Shipping cost":                    g("shipping_cost_amount"),
+            "Shipping costs passed on to logistics": g("actual_shipping_fee_amount"),
+            "Replacement shipping fee":         g("replacement_shipping_fee_amount"),
+            "Exchange shipping fee":            g("exchange_shipping_fee_amount"),
+            "Shipping cost borne by platform":  g("platform_shipping_fee_discount_amount", "shipping_fee_discount_amount"),
+            "Shipping cost paid by customer":   g("customer_paid_shipping_fee_amount"),
+            "Refunded shipping cost by customer": g("refund_customer_shipping_fee_amount", "customer_paid_shipping_fee_refund_amount"),
+            "Return shipping costs":            g("return_shipping_fee_amount"),
+            "Shipping cost subsidy":            g("shipping_fee_subsidy_amount"),
+            "Distance shipping fee Horizon+":   0,
+            "Affiliate Commission":             g("affiliate_commission_amount"),
+            "Affiliate partner commission":     g("affiliate_partner_commission_amount"),
+            "Affiliate Shop Ads commission":    g("affiliate_ads_commission_amount", "affiliate_shop_ads_commission_amount"),
+            "Affiliate Partner shop ads commission": g("affiliate_partner_shop_ads_commission_amount", "tap_shop_ads_commission_amount"),
+            "Shipping Fee Program service fee": g("sfp_service_fee_amount"),
+            "Dynamic commission":               g("dynamic_commission_amount"),
+            "Bonus cashback service fee":       g("bonus_cashback_service_fee_amount"),
+            "LIVE Specials service fee":        g("live_specials_fee_amount", "live_specials_service_fee_amount"),
+            "Voucher Xtra service fee":         g("voucher_xtra_service_fee_amount"),
+            "Order processing fee":             g("order_processing_fee_amount"),
+            "EAMS Program service fee":         g("eams_program_service_fee_amount"),
+            "Flash Sale service fee":           g("flash_sales_service_fee_amount", "flash_sale_service_fee_amount"),
+            "Dilayani Tokopedia fee":           0,
+            "Dilayani Tokopedia handling fee":  g("credit_card_handling_fee_amount"),
+            "PayLater program fee":             g("paylater_program_fee_amount"),
+            "Campaign resource fee":            g("campaign_resource_fee_amount"),
+            "Installation service fee":         g("installation_service_fee_amount"),
+            "Article 22 Income Tax withheld":   g("income_tax_withheld_amount", "pit_amount"),
+            "Platform special service fee":     g("platform_special_service_fee_amount"),
+            "GMV Max ad fee":                   g("gmv_max_ad_fee_amount"),
+            "Adjustment amount":                g("adjustment_amount"),
+            "Related order ID":                 str(t.get("adjustment_order_id") or ""),
+            "Customer payment":                 g("customer_payment_amount"),
+            "Customer refund":                  g("customer_refund_amount"),
+            "Seller co-funded voucher discount":   g("seller_cofunded_voucher_discount_amount"),
+            "Refund of seller co-funded voucher":  g("seller_cofunded_voucher_discount_refund_amount"),
+            "Platform discounts":               g("platform_discount_amount"),
+            "Refund of platform discounts":     g("platform_discount_refund_amount"),
+            "Platform co-funded voucher discounts":  g("platform_cofunded_voucher_discount_amount"),
+            "Refund of platform co-funded voucher":  g("platform_cofunded_voucher_discount_refund_amount"),
+            "Seller shipping cost discount":    g("seller_shipping_fee_discount_amount"),
+            "Estimated package weight (g)":     g("estimated_package_weight", "estimated_weight"),
+            "Actual package weight (g)":        g("actual_package_weight", "actual_weight"),
+            "Shopping center items":            "",
+            "Order Source":                     "",
         })
     return pd.DataFrame(rows)
 
@@ -1156,6 +1192,9 @@ if selected_shop:
                         transactions.append(tx)
             if transactions:
                 df = format_income_excel(transactions)
+                zero_cols = [c for c in df.columns if (df[c].fillna(0).astype(str).isin(["0", "0.0", ""])).all()]
+                if zero_cols:
+                    st.caption("Kolom masih 0/kosong semua: " + ", ".join(zero_cols))
                 st.success(f"✅ {len(transactions)} transaksi ditemukan dari {len(statements)} statement")
                 st.dataframe(df.head(10), use_container_width=True)
                 st.download_button(
