@@ -369,7 +369,7 @@ def get_statement_transactions(access_token, shop_cipher, statement_id):
             query["page_token"] = page_token
 
         result = make_tiktok_request(
-            f"/finance/202309/statements/{statement_id}/statement_transactions",
+            f"/finance/202501/statements/{statement_id}/statement_transactions",
             access_token, shop_cipher,
             method="GET",
             **query,
@@ -391,7 +391,15 @@ def get_statement_transactions(access_token, shop_cipher, statement_id):
             break
     return all_tx
 
-
+def get_product_title(access_token, shop_cipher, product_id, cache):
+    if not product_id:
+        return ""
+    if product_id not in cache:
+        r = make_tiktok_request(f"/product/202309/products/{product_id}",
+                                access_token, shop_cipher, method="GET")
+        cache[product_id] = (r.get("data") or {}).get("title", "") if r.get("code") == 0 else ""
+    return cache[product_id]
+    
 def get_products(access_token, shop_cipher):
     all_products, page_token = [], None
     for _ in range(100):
@@ -424,52 +432,57 @@ def get_products(access_token, shop_cipher):
     return all_products
 
 def get_order_finance_transactions(access_token, shop_cipher, order_id):
-    """GET /finance/{version}/orders/{order_id}/statement_transactions — detail 1 order,
-    termasuk sku_transactions[] (produk, GMV Max ad fee, dst)."""
     result = make_tiktok_request(
-        f"/finance/202309/orders/{order_id}/statement_transactions",
-        access_token, shop_cipher,
-        method="GET",
+        f"/finance/202501/orders/{order_id}/statement_transactions",   # ← 202501
+        access_token, shop_cipher, method="GET",
     )
-    if result.get("code") == 0:
-        return result.get("data", {})
-    return {}
+    if result.get("code") != 0:
+        return {"_error": f"{result.get('code')} {result.get('message')}"}
+    data = result.get("data", {}) or {}
+    txs = data.get("statement_transactions")
+    if txs:   # bentuk 202501: list -> gabungkan jadi 1 dict
+        merged = dict(txs[0])
+        merged["sku_transactions"] = [s for t in txs for s in (t.get("sku_transactions") or [])]
+        merged.setdefault("currency", data.get("currency", "IDR"))
+        return merged
+    return data
 
 
 def get_product_ads_performance(access_token, shop_cipher, start_time, end_time, progress_bar=None):
-    """Rekonstruksi performa iklan per produk dari data finance per-order
-    (TikTok Shop belum punya endpoint dashboard iklan langsung)."""
     orders = get_all_orders(access_token, shop_cipher, start_time, end_time)
     per_product = {}
 
+    # sku_id -> nama produk, dari line_items order (selalu terisi, apa pun status produknya)
+    name_by_sku = {}
+    for o in orders:
+        for li in o.get("line_items", []):
+            name_by_sku[li.get("sku_id")] = li.get("product_name") or "Unknown"
+
+    shown_err = shown_dbg = False
     for idx, o in enumerate(orders):
         order_id = o.get("id")
         if order_id:
             detail = get_order_finance_transactions(access_token, shop_cipher, order_id)
+            if detail.get("_error") and not shown_err:
+                st.warning(f"Finance API error: {detail['_error']}"); shown_err = True
+            if detail.get("sku_transactions") and not shown_dbg:
+                st.write("🔍 Debug 1 finance detail:", detail); shown_dbg = True   # hapus setelah cocok
+
             currency = detail.get("currency", "IDR")
             for sku in detail.get("sku_transactions", []):
-                key = sku.get("product_name") or "Unknown"
+                key = name_by_sku.get(sku.get("sku_id")) or sku.get("product_name") or "Unknown"
                 fee = (sku.get("fee_tax_breakdown") or {}).get("fee") or {}
-                ad_cost    = abs(float(fee.get("gmv_max_ad_fee_amount", 0) or 0))
-                revenue    = float(sku.get("revenue_amount", 0) or 0)
-                settlement = float(sku.get("settlement_amount", 0) or 0)
-                qty        = sku.get("quantity", 0) or 0
-
-                row = per_product.setdefault(key, {
-                    "revenue": 0, "ad_cost": 0, "settlement": 0,
-                    "orders": 0, "qty": 0, "currency": currency,
-                })
-                row["revenue"]    += revenue
-                row["ad_cost"]    += ad_cost
-                row["settlement"] += settlement
+                row = per_product.setdefault(key, {"revenue": 0, "ad_cost": 0, "settlement": 0,
+                                                   "orders": 0, "qty": 0, "currency": currency})
+                row["ad_cost"]    += abs(float(fee.get("gmv_max_ad_fee_amount", 0) or 0))
+                row["revenue"]    += float(sku.get("revenue_amount", 0) or 0)
+                row["settlement"] += float(sku.get("settlement_amount", 0) or 0)
                 row["orders"]     += 1
-                row["qty"]        += qty
+                row["qty"]        += sku.get("quantity", 0) or 0
 
         if progress_bar and orders:
             progress_bar.progress((idx + 1) / len(orders))
-
     return per_product
-
 
 def format_product_ads_excel(per_product):
     rows = []
@@ -1187,10 +1200,9 @@ if selected_shop:
                 aff_orders = get_affiliate_orders(access_token, shop_cipher, start_utc, end_utc)
             if aff_orders:
                 st.write("🔍 Debug 1 affiliate order:", aff_orders[0])
-                prods = get_products(access_token, shop_cipher)
-                name_map = {p.get("id"): p.get("title", "") for p in prods}
                 df = format_creator_orders_excel(aff_orders)
-                df["Produk"] = df["ID Produk"].map(name_map).fillna("")
+                cache = {}
+                df["Produk"] = df["ID Produk"].map(lambda pid: get_product_title(access_token, shop_cipher, pid, cache))
                 st.success(f"✅ {len(aff_orders)} order affiliate")
                 st.dataframe(df.head(10), use_container_width=True)
                 st.download_button(
