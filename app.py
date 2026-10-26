@@ -863,49 +863,61 @@ def format_product_excel(products_data):
     return pd.DataFrame(rows)
 
 
+def _first(d, *keys, default=""):
+    """Ambil nilai dari key pertama yang ada; kalau nilainya dict {amount,...} ambil amount."""
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, ""):
+            if isinstance(v, dict):
+                v = v.get("amount", v.get("value", ""))
+            return v
+    return default
+
+
 def format_creator_orders_excel(affiliate_orders):
     rows = []
     for o in affiliate_orders:
-        rows.append({
-            "ID Pesanan":        o.get("order_id", ""),
-            "ID Produk":         o.get("product_id", ""),
-            "Produk":            o.get("product_name", ""),
-            "SKU":               o.get("sku_name", ""),
-            "ID Sku":            o.get("sku_id", ""),
-            "Penjual Sku":       o.get("seller_sku", ""),
-            "Harga":             o.get("price", 0),
-            "Payment Amount":    o.get("payment_amount", 0),
-            "Mata Uang":         o.get("currency", "IDR"),
-            "Kuantitas":         o.get("quantity", 0),
-            "Metode Pembayaran": o.get("payment_method", ""),
-            "Status Pesanan":    o.get("order_status", ""),
-            "Nama pengguna kreator": o.get("creator_nickname", ""),
-            "Jenis Konten":      o.get("content_type", ""),
-            "ID Konten":         o.get("content_id", ""),
-            "commission model":  o.get("commission_model", ""),
-            "Persentase komisi standar":             o.get("standard_commission_rate", 0),
-            "Est. Acuan Komisi":                     o.get("est_commission_base", 0),
-            "Perkiraan pembayaran komisi standar":   o.get("est_standard_commission", 0),
-            "Acuan Komisi Aktual":                   o.get("actual_commission_base", 0),
-            "Pembayaran Komisi Aktual":              o.get("actual_standard_commission", 0),
-            "Persentase komisi Iklan Toko":          o.get("shop_ads_commission_rate", 0),
-            "Perkiraan pembayaran komisi Iklan Toko": o.get("est_shop_ads_commission", 0),
-            "Pembayaran komisi Iklan Toko aktual":   o.get("actual_shop_ads_commission", 0),
-            "Perkiraan bonus kreator":               o.get("est_creator_bonus", 0),
-            "Bonus aktual kreator":                  o.get("actual_creator_bonus", 0),
-            "Pengembalian barang":                   o.get("is_returned", False),
-            "Pengembalian dana":                     o.get("refund_amount", 0),
-            "Waktu Dibuat":                          epoch_to_wib(o.get("create_time")),
-            "Waktu Pembayaran":                      epoch_to_wib(o.get("paid_time")),
-            "Waktu Pesanan Siap Dikirim":            epoch_to_wib(o.get("rts_time")),
-            "Order Delivery Time":                   epoch_to_wib(o.get("delivery_time")),
-            "Waktu Pesanan Selesai":                 epoch_to_wib(o.get("completed_time")),
-            "Waktu Komisi Dibayar":                  epoch_to_wib(o.get("commission_paid_time")),
-            "Platform":                              o.get("platform", "TikTok"),
-            "agreement_type":                        o.get("agreement_type", ""),
-        })
+        skus = o.get("skus") or [{}]          # 1 SKU = 1 baris
+        for s in skus:
+            rows.append({
+                "ID Pesanan":        o.get("id", ""),
+                "ID Produk":         _first(s, "product_id"),
+                "Produk":            _first(s, "product_name"),
+                "SKU":               _first(s, "sku_name"),
+                "ID Sku":            _first(s, "sku_id", "id"),
+                "Penjual Sku":       _first(s, "seller_sku"),
+                "Harga":             _first(s, "price", default=0),
+                "Payment Amount":    _first(s, "payment_amount", "sale_price", default=0),
+                "Mata Uang":         _first(s.get("price") or {}, "currency", default="IDR"),
+                "Kuantitas":         _first(s, "quantity", default=0),
+                "Metode Pembayaran": o.get("payment_method", ""),
+                "Status Pesanan":    o.get("status", ""),
+                "Nama pengguna kreator": _first(s, "creator_username", "creator_nickname"),
+                "Jenis Konten":      _first(s, "content_type"),
+                "ID Konten":         _first(s, "content_id"),
+                "commission model":  _first(s, "commission_model"),
+                "Persentase komisi standar":  _first(s, "commission_rate", "standard_commission_rate", default=0),
+                "Est. Acuan Komisi":          _first(s, "estimated_commission_base", default=0),
+                "Perkiraan pembayaran komisi standar": _first(s, "estimated_commission_fee", "estimated_commission", default=0),
+                "Acuan Komisi Aktual":        _first(s, "actual_commission_base", default=0),
+                "Pembayaran Komisi Aktual":   _first(s, "actual_commission_fee", "actual_commission", default=0),
+                "Persentase komisi Iklan Toko": _first(s, "shop_ads_commission_rate", default=0),
+                "Perkiraan pembayaran komisi Iklan Toko": _first(s, "estimated_shop_ads_commission_fee", "estimated_shop_ads_commission", default=0),
+                "Pembayaran komisi Iklan Toko aktual":    _first(s, "actual_shop_ads_commission_fee", "actual_shop_ads_commission", default=0),
+                "Perkiraan bonus kreator":    _first(s, "estimated_creator_bonus", default=0),
+                "Bonus aktual kreator":       _first(s, "actual_creator_bonus", default=0),
+                "Pengembalian barang":        _first(s, "is_returned", default=False),
+                "Pengembalian dana":          _first(s, "refund_amount", default=0),
+                "Waktu Dibuat":               epoch_to_wib(o.get("create_time")),
+                "Waktu Pembayaran":           epoch_to_wib(o.get("paid_time")),
+                "Waktu Pesanan Siap Dikirim": epoch_to_wib(o.get("rts_time")),
+                "Order Delivery Time":        epoch_to_wib(o.get("delivery_time")),
+                "Waktu Pesanan Selesai":      epoch_to_wib(o.get("completed_time")),
+                "Waktu Komisi Dibayar":       epoch_to_wib(o.get("commission_paid_time")),
+                "Platform":                   "TikTok",
+                "agreement_type":             _first(s, "agreement_type"),
+            })
     return pd.DataFrame(rows)
-
 
 def to_excel_download(df: pd.DataFrame) -> BytesIO:
     output = BytesIO()
@@ -1178,6 +1190,7 @@ if selected_shop:
             with st.spinner("Mengambil data affiliate..."):
                 aff_orders = get_affiliate_orders(access_token, shop_cipher, start_utc, end_utc)
             if aff_orders:
+                st.write("🔍 Debug 1 affiliate order:", aff_orders[0])
                 df = format_creator_orders_excel(aff_orders)
                 st.success(f"✅ {len(aff_orders)} order affiliate")
                 st.dataframe(df.head(10), use_container_width=True)
