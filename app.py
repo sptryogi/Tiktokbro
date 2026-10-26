@@ -116,7 +116,6 @@ def exchange_auth_code(auth_code: str) -> dict:
         resp = requests.get(url, params=params, timeout=30)
         resp.raise_for_status()
         result = resp.json()
-        st.write("🔍 Debug token response:", result)   # bisa dihapus setelah production
         return result
     except requests.exceptions.RequestException as e:
         return {"code": -1, "message": str(e), "data": {}}
@@ -159,7 +158,6 @@ def get_authorized_shops(access_token: str) -> list:
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=30)
         result = resp.json()
-        st.write("🔍 Debug authorized shops response:", result)
         if result.get("code") == 0:
             data = result.get("data", {})
             return data.get("shops") or data.get("authorized_shops") or []
@@ -292,8 +290,7 @@ def get_all_orders(access_token, shop_cipher, start_time, end_time):
         if result.get("code") == 0:
             data   = result.get("data", {})
             orders = data.get("order_list") or data.get("orders") or []
-            if not all_orders and orders:
-                st.write("🔍 Debug struktur 1 order:", orders[0])
+
             all_orders.extend(orders)
             page_token = data.get("next_page_token")
             if not page_token or not orders:
@@ -394,10 +391,7 @@ def get_statement_transactions(access_token, shop_cipher, statement_id):
         if result.get("code") == 0:
             data = result.get("data", {})
             tx = data.get("transactions") or data.get("statement_transactions") or data.get("list") or []
-            if not all_tx and tx:
-                # tampil sekali saja per sesi biar bisa cek nama field asli di response,
-                # hapus baris ini setelah dikonfirmasi cocok
-                st.write("🔍 Debug struktur 1 statement_transaction:", tx[0])
+
             all_tx.extend(tx)
             page_token = data.get("next_page_token")
             if not page_token or not tx:
@@ -506,8 +500,7 @@ def get_products(access_token, shop_cipher):
         if result.get("code") == 0:
             data     = result.get("data", {})
             products = data.get("products") or data.get("product_list") or []
-            if not all_products and products:
-                st.write("🔍 Debug struktur 1 produk:", products[0])
+
             all_products.extend(products)
             page_token = data.get("next_page_token")
             if not page_token or not products:
@@ -539,21 +532,24 @@ def get_product_ads_performance(access_token, shop_cipher, start_time, end_time,
     orders = get_all_orders(access_token, shop_cipher, start_time, end_time)
     per_product = {}
 
-    # sku_id -> nama produk, dari line_items order (selalu terisi, apa pun status produknya)
+    def _f(v):
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     name_by_sku = {}
     for o in orders:
         for li in o.get("line_items", []):
             name_by_sku[li.get("sku_id")] = li.get("product_name") or "Unknown"
 
-    shown_err = shown_dbg = False
+    shown_err = False
     for idx, o in enumerate(orders):
         order_id = o.get("id")
         if order_id:
             detail = get_order_finance_transactions(access_token, shop_cipher, order_id)
             if detail.get("_error") and not shown_err:
                 st.warning(f"Finance API error: {detail['_error']}"); shown_err = True
-            if detail.get("sku_transactions") and not shown_dbg:
-                st.write("🔍 Debug 1 finance detail:", detail); shown_dbg = True   # hapus setelah cocok
 
             currency = detail.get("currency", "IDR")
             for sku in detail.get("sku_transactions", []):
@@ -561,11 +557,11 @@ def get_product_ads_performance(access_token, shop_cipher, start_time, end_time,
                 fee = (sku.get("fee_tax_breakdown") or {}).get("fee") or {}
                 row = per_product.setdefault(key, {"revenue": 0, "ad_cost": 0, "settlement": 0,
                                                    "orders": 0, "qty": 0, "currency": currency})
-                row["ad_cost"]    += abs(float(fee.get("gmv_max_ad_fee_amount", 0) or 0))
-                row["revenue"]    += float(sku.get("revenue_amount", 0) or 0)
-                row["settlement"] += float(sku.get("settlement_amount", 0) or 0)
+                row["ad_cost"]    += abs(_f(fee.get("gmv_max_ad_fee_amount")))
+                row["revenue"]    += _f(sku.get("revenue_amount"))
+                row["settlement"] += _f(sku.get("settlement_amount"))
                 row["orders"]     += 1
-                row["qty"]        += sku.get("quantity", 0) or 0
+                row["qty"]        += int(_f(sku.get("quantity")))
 
         if progress_bar and orders:
             progress_bar.progress((idx + 1) / len(orders))
@@ -952,11 +948,11 @@ def format_income_excel(transactions):
             "Subtotal after seller discounts":  g("subtotal_after_seller_discount_amount", "net_sales_amount") or (gross - abs(sdisc)),
             "Subtotal before discounts":        gross,
             "Seller discounts":                 sdisc,
-            "Distance item fee from Horizon+ Program": 0,
+            "Distance item fee from Horizon+ Program": g("distant_item_fee_amount"),
             "Refund subtotal after seller discounts":  g("refund_subtotal_after_seller_discount_amount") or (r_gross - abs(r_sdisc)),
             "Refund subtotal before seller discounts": r_gross,
             "Refund of seller discounts":       r_sdisc,
-            "Total Fees":                       g("fee_tax_amount", "fee_amount"),
+            "Total Fees":                         g("fee_and_tax_amount", "fee_tax_amount", "fee_amount"),
             "Platform commission fee":          g("platform_commission_amount"),
             "Pre-order service fee":            g("pre_order_service_fee_amount"),
             "Mall service fee":                 g("mall_service_fee_amount"),
@@ -967,28 +963,28 @@ def format_income_excel(transactions):
             "Exchange shipping fee":            g("exchange_shipping_fee_amount"),
             "Shipping cost borne by platform":  g("platform_shipping_fee_discount_amount", "shipping_fee_discount_amount"),
             "Shipping cost paid by customer":   g("customer_paid_shipping_fee_amount"),
-            "Refunded shipping cost by customer": g("refund_customer_shipping_fee_amount", "customer_paid_shipping_fee_refund_amount"),
+            "Refunded shipping cost by customer": g("refunded_customer_shipping_fee_amount"),
             "Return shipping costs":            g("return_shipping_fee_amount"),
             "Shipping cost subsidy":            g("shipping_fee_subsidy_amount"),
-            "Distance shipping fee Horizon+":   0,
+            "Distance shipping fee Horizon+":     g("distant_shipping_fee_amount"),
             "Affiliate Commission":             g("affiliate_commission_amount"),
             "Affiliate partner commission":     g("affiliate_partner_commission_amount"),
             "Affiliate Shop Ads commission":    g("affiliate_ads_commission_amount", "affiliate_shop_ads_commission_amount"),
-            "Affiliate Partner shop ads commission": g("affiliate_partner_shop_ads_commission_amount", "tap_shop_ads_commission_amount"),
+            "Affiliate Partner shop ads commission": g("tap_shop_ads_commission"),
             "Shipping Fee Program service fee": g("sfp_service_fee_amount"),
             "Dynamic commission":               g("dynamic_commission_amount"),
             "Bonus cashback service fee":       g("bonus_cashback_service_fee_amount"),
             "LIVE Specials service fee":        g("live_specials_fee_amount", "live_specials_service_fee_amount"),
             "Voucher Xtra service fee":         g("voucher_xtra_service_fee_amount"),
-            "Order processing fee":             g("order_processing_fee_amount"),
+            "Order processing fee":               g("vn_fix_infrastructure_fee", "order_processing_fee_amount"),
             "EAMS Program service fee":         g("eams_program_service_fee_amount"),
             "Flash Sale service fee":           g("flash_sales_service_fee_amount", "flash_sale_service_fee_amount"),
             "Dilayani Tokopedia fee":           0,
-            "Dilayani Tokopedia handling fee":  g("credit_card_handling_fee_amount"),
-            "PayLater program fee":             g("paylater_program_fee_amount"),
+            "Dilayani Tokopedia handling fee":    g("dt_handling_fee_amount"),
+            "PayLater program fee":               g("seller_paylater_handling_fee_amount"),
             "Campaign resource fee":            g("campaign_resource_fee_amount"),
-            "Installation service fee":         g("installation_service_fee_amount"),
-            "Article 22 Income Tax withheld":   g("income_tax_withheld_amount", "pit_amount"),
+            "Installation service fee":           g("installation_service_fee"),
+            "Article 22 Income Tax withheld":     g("article_22_income_tax_withheld"),
             "Platform special service fee":     g("platform_special_service_fee_amount"),
             "GMV Max ad fee":                   g("gmv_max_ad_fee_amount"),
             "Adjustment amount":                g("adjustment_amount"),
@@ -1364,7 +1360,6 @@ if selected_shop:
             with st.spinner("Mengambil data affiliate..."):
                 aff_orders = get_affiliate_orders(access_token, shop_cipher, start_utc, end_utc)
             if aff_orders:
-                st.write("🔍 Debug 1 affiliate order:", aff_orders[0])
                 df = format_creator_orders_excel(aff_orders)
                 cache = {}
                 df["Produk"] = df["ID Produk"].map(lambda pid: get_product_title(access_token, shop_cipher, pid, cache))
