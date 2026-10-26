@@ -1192,7 +1192,10 @@ if selected_shop:
                 aff_orders = get_affiliate_orders(access_token, shop_cipher, start_utc, end_utc)
             if aff_orders:
                 st.write("🔍 Debug 1 affiliate order:", aff_orders[0])
+                prods = get_products(access_token, shop_cipher)
+                name_map = {p.get("id"): p.get("title", "") for p in prods}
                 df = format_creator_orders_excel(aff_orders)
+                df["Produk"] = df["ID Produk"].map(name_map).fillna("")
                 st.success(f"✅ {len(aff_orders)} order affiliate")
                 st.dataframe(df.head(10), use_container_width=True)
                 st.download_button(
