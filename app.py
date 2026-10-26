@@ -223,13 +223,17 @@ def make_tiktok_request(
 _make_tiktok_request_once = make_tiktok_request
 
 def make_tiktok_request(*args, **kwargs):
-    """Retry otomatis kalau TikTok balas internal error / timeout."""
+    """Retry otomatis: rate limit (jeda lebih lama), internal error, timeout."""
     result = {}
-    for attempt in range(4):
+    for attempt in range(5):
         result = _make_tiktok_request_once(*args, **kwargs)
-        if result.get("code") not in (36009003, -1):
+        code = result.get("code")
+        if code == 36009002:                    # too many requests
+            time.sleep(3 * (attempt + 1))
+        elif code in (36009003, -1):            # internal error / timeout
+            time.sleep(1.5 * (attempt + 1))
+        else:
             return result
-        time.sleep(1.5 * (attempt + 1))
     return result
     
 
@@ -417,6 +421,7 @@ def get_product_info(access_token, shop_cipher, product_id, cache):
     if not product_id:
         return {}
     if product_id not in cache:
+        time.sleep(0.2)
         r = make_tiktok_request(f"/product/202309/products/{product_id}",
                                 access_token, shop_cipher, method="GET")
         info = {}
@@ -440,42 +445,46 @@ def get_product_title(access_token, shop_cipher, product_id, cache):   # menggan
     return get_product_info(access_token, shop_cipher, product_id, cache).get("title", "")
 
 
-def get_returns_by_orders(access_token, shop_cipher, order_ids, progress_bar=None):
-    """order_id -> {'refund': total refund, 'type': jenis, 'sku_qty': {sku_id: jumlah unit diretur}}"""
-    result_map, shown = {}, False
-    ids = [i for i in order_ids if i]
-    chunks = [ids[i:i + 20] for i in range(0, len(ids), 20)]
-    for idx, chunk in enumerate(chunks):
-        page_token = None
-        for _ in range(20):
-            query = {"page_size": 50}
-            if page_token:
-                query["page_token"] = page_token
-            res = make_tiktok_request("/return_refund/202309/returns/search",
-                                      access_token, shop_cipher,
-                                      method="POST", body={"order_ids": chunk}, **query)
-            if res.get("code") != 0:
-                st.warning(f"Return API: {res.get('code')} {res.get('message')}")
-                break
-            data = res.get("data") or {}
-            rets = data.get("return_orders") or data.get("returns") or []
-            if rets and not shown:
-                st.write("🔍 Debug 1 return:", rets[0]); shown = True   # hapus setelah cocok
-            for r in rets:
-                status = (r.get("return_status") or r.get("status") or "").upper()
-                if "REJECT" in status or "CANCEL" in status:
-                    continue
-                m = result_map.setdefault(r.get("order_id"), {"refund": 0.0, "type": "", "sku_qty": {}})
-                ra = r.get("refund_amount") or {}
-                m["refund"] += float(ra.get("refund_total") or 0)
-                m["type"] = r.get("return_type") or m["type"]
-                for li in r.get("return_line_items") or []:
-                    m["sku_qty"][li.get("sku_id")] = m["sku_qty"].get(li.get("sku_id"), 0) + 1
-            page_token = data.get("next_page_token")
-            if not page_token or not rets:
-                break
-        if progress_bar:
-            progress_bar.progress((idx + 1) / len(chunks))
+def get_returns_by_orders(access_token, shop_cipher, start_time, order_ids):
+    """Tarik semua retur sejak start_time (sedikit panggilan), lalu filter ke order yang ada."""
+    wanted = {o for o in order_ids if o}
+    body = {"create_time_ge": int(start_time.timestamp()),
+            "create_time_lt": int(datetime.now(timezone.utc).timestamp())}
+    result_map, shown, page_token = {}, False, None
+
+    for _ in range(100):
+        query = {"page_size": 50}
+        if page_token:
+            query["page_token"] = page_token
+        res = make_tiktok_request("/return_refund/202309/returns/search",
+                                  access_token, shop_cipher,
+                                  method="POST", body=body, **query)
+        if res.get("code") != 0:
+            st.warning(f"Return API: {res.get('code')} {res.get('message')}")
+            break
+        data = res.get("data") or {}
+        rets = data.get("return_orders") or data.get("returns") or []
+        if rets and not shown:
+            st.write("🔍 Debug 1 return:", rets[0]); shown = True   # hapus setelah cocok
+
+        for r in rets:
+            oid = r.get("order_id")
+            if oid not in wanted:
+                continue
+            status = (r.get("return_status") or r.get("status") or "").upper()
+            if "REJECT" in status or "CANCEL" in status:
+                continue
+            m = result_map.setdefault(oid, {"refund": 0.0, "type": "", "sku_qty": {}})
+            ra = r.get("refund_amount") or {}
+            m["refund"] += float(ra.get("refund_total") or 0)
+            m["type"] = r.get("return_type") or m["type"]
+            for li in r.get("return_line_items") or []:
+                m["sku_qty"][li.get("sku_id")] = m["sku_qty"].get(li.get("sku_id"), 0) + 1
+
+        page_token = data.get("next_page_token")
+        if not page_token or not rets:
+            break
+        time.sleep(0.5)          # jeda antar halaman
     return result_map
     
 def get_products(access_token, shop_cipher):
@@ -748,6 +757,25 @@ def _merge_items(items):
         m["_sale"] += float(it.get("sale_price") or 0)
         m["_bsf"]  += float(it.get("buyer_service_fee") or 0)
     return list(out.values())
+
+def _substatus(o):
+    s = (o.get("status") or "").upper()
+    if o.get("is_on_hold_order"):
+        return "On hold (under review)"
+    mapping = {
+        "UNPAID":              "Awaiting buyer payment",
+        "ON_HOLD":             "On hold (under review)",
+        "AWAITING_SHIPMENT":   "To ship - needs to be arranged",
+        "PARTIALLY_SHIPPING":  "Partially shipped",
+        "AWAITING_COLLECTION": "Shipment arranged - awaiting courier pickup",
+        "IN_TRANSIT":          "Shipped - in transit",
+        "DELIVERED":           "Delivered - awaiting completion",
+        "COMPLETED":           "Completed",
+    }
+    if s == "CANCELLED":
+        who = o.get("cancellation_initiator") or "UNKNOWN"
+        return f"Cancelled by {who.title()}"
+    return mapping.get(s, s)
     
 def format_orders_excel(orders_data, order_details, returns=None, products=None):
     rows = []
@@ -765,7 +793,7 @@ def format_orders_excel(orders_data, order_details, returns=None, products=None)
         base = {
             "Order ID":              o.get("id", ""),
             "Order Status":          o.get("status", ""),
-            "Order Substatus":       "",  # tidak ada di data TikTok
+            "Order Substatus": _substatus(o),
             "Shipping Fee After Discount":   payment.get("shipping_fee", 0),
             "Original Shipping Fee":         payment.get("original_shipping_fee", 0),
             "Order Refund Amount": ret.get("refund", 0),
@@ -1312,7 +1340,7 @@ if selected_shop:
                 progress  = st.progress(0)
                 details   = get_order_details_batch(access_token, shop_cipher, order_ids, progress_bar=progress)
                 with st.spinner("Mengambil data retur & info produk..."):
-                    returns = get_returns_by_orders(access_token, shop_cipher, order_ids)
+                    returns = get_returns_by_orders(access_token, shop_cipher, start_utc, order_ids)
                     pcache = {}
                     for pid in {li.get("product_id") for d in details for li in d.get("line_items", [])}:
                         get_product_info(access_token, shop_cipher, pid, pcache)
