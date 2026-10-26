@@ -9,6 +9,7 @@ from supabase import create_client, Client
 import json
 from io import BytesIO
 import urllib.parse
+from pypdf import PdfReader, PdfWriter
 
 WIB = timezone(timedelta(hours=7))
 # =================================================================
@@ -480,6 +481,53 @@ def get_returns_by_orders(access_token, shop_cipher, start_time, order_ids):
             break
         time.sleep(0.5)          # jeda antar halaman
     return result_map
+
+def get_shipping_label_url(access_token, shop_cipher, package_id, size="A6"):
+    """Return (doc_url, error). Link berlaku 24 jam, jadi langsung diunduh."""
+    res = make_tiktok_request(
+        f"/fulfillment/202309/packages/{package_id}/shipping_documents",
+        access_token, shop_cipher, method="GET",
+        document_type="SHIPPING_LABEL", document_size=size, document_format="PDF",
+    )
+    if res.get("code") == 0:
+        return (res.get("data") or {}).get("doc_url", ""), ""
+    return "", f"{res.get('code')} {res.get('message')}"
+
+
+def build_label_pdf(access_token, shop_cipher, orders, size="A6", progress_bar=None):
+    """Gabungkan semua resi jadi 1 PDF. Diurutkan per kurir lalu waktu pesanan."""
+    writer, ok, failed, seen = PdfWriter(), 0, [], set()
+    orders = sorted(orders, key=lambda o: (o.get("shipping_provider") or "", o.get("create_time") or 0))
+
+    for idx, o in enumerate(orders):
+        for pkg in o.get("packages") or []:
+            pid = pkg.get("id")
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+
+            url, err = get_shipping_label_url(access_token, shop_cipher, pid, size)
+            if not url:
+                failed.append((o.get("id"), pid, err))
+                continue
+            try:
+                r = requests.get(url, timeout=60)
+                r.raise_for_status()
+                for page in PdfReader(BytesIO(r.content)).pages:
+                    writer.add_page(page)
+                ok += 1
+            except Exception as e:
+                failed.append((o.get("id"), pid, str(e)))
+            time.sleep(0.2)
+
+        if progress_bar and orders:
+            progress_bar.progress((idx + 1) / len(orders))
+
+    out = BytesIO()
+    if ok:
+        writer.write(out)
+    out.seek(0)
+    return out, ok, failed
     
 def get_products(access_token, shop_cipher):
     all_products, page_token = [], None
@@ -1286,11 +1334,12 @@ if selected_shop:
     shop_cipher  = selected_shop.get("shop_cipher") or selected_shop["shop_id"]
     date_suffix  = f"{start_date:%Y%m%d}_{end_date:%Y%m%d}"
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "💰 Income/Settlement",
         "📦 Semua Pesanan",
         "👥 Creator Orders",
         "🛍️ Product Data (Iklan)",
+        "🧾 Resi (A6)",
     ])
 
     # ── TAB 1: INCOME ──────────────────────
@@ -1395,6 +1444,35 @@ if selected_shop:
             else:
                 st.info("Tidak ada data produk/iklan untuk periode ini.")
 
+    # ── TAB 5: RESI ────────────────────────
+    with tab5:
+        st.subheader("Cetak Resi Penjualan (PDF A6)")
+        st.caption(f"WIB: {start_date:%d %b %Y %H:%M} — {end_date:%d %b %Y %H:%M}")
+        statuses = st.multiselect(
+            "Status pesanan yang dicetak",
+            ["AWAITING_SHIPMENT", "AWAITING_COLLECTION", "PARTIALLY_SHIPPING",
+             "IN_TRANSIT", "DELIVERED", "COMPLETED"],
+            default=["AWAITING_SHIPMENT", "AWAITING_COLLECTION"],
+        )
+        if st.button("🖨️ Buat PDF Resi", key="btn_label", type="primary"):
+            with st.spinner("Mengambil pesanan..."):
+                orders = [o for o in get_all_orders(access_token, shop_cipher, start_utc, end_utc)
+                          if o.get("status") in statuses]
+            if not orders:
+                st.info("Tidak ada pesanan dengan status tersebut di periode ini.")
+            else:
+                st.info(f"📋 {len(orders)} pesanan, mengambil resi...")
+                progress = st.progress(0)
+                pdf, ok, failed = build_label_pdf(access_token, shop_cipher, orders,
+                                                  size="A6", progress_bar=progress)
+                if ok:
+                    st.success(f"✅ {ok} resi digabung dalam 1 PDF")
+                    st.download_button("📥 Download PDF Resi", pdf,
+                                       f"Resi_A6_{date_suffix}.pdf", "application/pdf")
+                if failed:
+                    st.warning(f"⚠️ {len(failed)} resi gagal diambil")
+                    st.dataframe(pd.DataFrame(failed, columns=["Order ID", "Package ID", "Error"]),
+                                 use_container_width=True)
 else:
     st.info("👈 Silakan hubungkan toko terlebih dahulu melalui sidebar.")
     with st.expander("📋 Panduan Setup"):
