@@ -501,7 +501,7 @@ def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
             query["page_token"] = page_token
 
         result = make_tiktok_request(
-            "/affiliate_seller/202405/orders/search", # Pastikan path ini benar
+            "/affiliate_seller/202410/orders/search", # Pastikan path ini benar
             access_token, shop_cipher,
             method="POST",
             body=body,
