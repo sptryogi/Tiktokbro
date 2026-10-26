@@ -863,59 +863,60 @@ def format_product_excel(products_data):
     return pd.DataFrame(rows)
 
 
-def _first(d, *keys, default=""):
-    """Ambil nilai dari key pertama yang ada; kalau nilainya dict {amount,...} ambil amount."""
-    for k in keys:
-        v = d.get(k)
-        if v not in (None, ""):
-            if isinstance(v, dict):
-                v = v.get("amount", v.get("value", ""))
-            return v
-    return default
+def _amt(d, key, default=0):
+    """Ambil angka dari {"amount": "22000", "currency": "IDR"}; kalau {} / kosong -> default."""
+    v = d.get(key)
+    if isinstance(v, dict):
+        v = v.get("amount")
+    try:
+        return float(v) if v not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
 
 
 def format_creator_orders_excel(affiliate_orders):
     rows = []
     for o in affiliate_orders:
-        skus = o.get("skus") or [{}]          # 1 SKU = 1 baris
-        for s in skus:
+        for s in (o.get("skus") or [{}]):
+            qty   = s.get("quantity", 0) or 0
+            price = _amt(s, "price")
             rows.append({
                 "ID Pesanan":        o.get("id", ""),
-                "ID Produk":         _first(s, "product_id"),
-                "Produk":            _first(s, "product_name"),
-                "SKU":               _first(s, "sku_name"),
-                "ID Sku":            _first(s, "sku_id", "id"),
-                "Penjual Sku":       _first(s, "seller_sku"),
-                "Harga":             _first(s, "price", default=0),
-                "Payment Amount":    _first(s, "payment_amount", "sale_price", default=0),
-                "Mata Uang":         _first(s.get("price") or {}, "currency", default="IDR"),
-                "Kuantitas":         _first(s, "quantity", default=0),
-                "Metode Pembayaran": o.get("payment_method", ""),
-                "Status Pesanan":    o.get("status", ""),
-                "Nama pengguna kreator": _first(s, "creator_username", "creator_nickname"),
-                "Jenis Konten":      _first(s, "content_type"),
-                "ID Konten":         _first(s, "content_id"),
-                "commission model":  _first(s, "commission_model"),
-                "Persentase komisi standar":  _first(s, "commission_rate", "standard_commission_rate", default=0),
-                "Est. Acuan Komisi":          _first(s, "estimated_commission_base", default=0),
-                "Perkiraan pembayaran komisi standar": _first(s, "estimated_commission_fee", "estimated_commission", default=0),
-                "Acuan Komisi Aktual":        _first(s, "actual_commission_base", default=0),
-                "Pembayaran Komisi Aktual":   _first(s, "actual_commission_fee", "actual_commission", default=0),
-                "Persentase komisi Iklan Toko": _first(s, "shop_ads_commission_rate", default=0),
-                "Perkiraan pembayaran komisi Iklan Toko": _first(s, "estimated_shop_ads_commission_fee", "estimated_shop_ads_commission", default=0),
-                "Pembayaran komisi Iklan Toko aktual":    _first(s, "actual_shop_ads_commission_fee", "actual_shop_ads_commission", default=0),
-                "Perkiraan bonus kreator":    _first(s, "estimated_creator_bonus", default=0),
-                "Bonus aktual kreator":       _first(s, "actual_creator_bonus", default=0),
-                "Pengembalian barang":        _first(s, "is_returned", default=False),
-                "Pengembalian dana":          _first(s, "refund_amount", default=0),
-                "Waktu Dibuat":               epoch_to_wib(o.get("create_time")),
-                "Waktu Pembayaran":           epoch_to_wib(o.get("paid_time")),
-                "Waktu Pesanan Siap Dikirim": epoch_to_wib(o.get("rts_time")),
-                "Order Delivery Time":        epoch_to_wib(o.get("delivery_time")),
-                "Waktu Pesanan Selesai":      epoch_to_wib(o.get("completed_time")),
-                "Waktu Komisi Dibayar":       epoch_to_wib(o.get("commission_paid_time")),
-                "Platform":                   "TikTok",
-                "agreement_type":             _first(s, "agreement_type"),
+                "ID Produk":         s.get("product_id", ""),
+                "Produk":            "",   # tidak ada di response (lihat catatan)
+                "SKU":               s.get("sku_name", ""),
+                "ID Sku":            s.get("sku_id", ""),
+                "Penjual Sku":       s.get("seller_sku", ""),
+                "Harga":             price,
+                "Payment Amount":    price * qty,
+                "Mata Uang":         (s.get("price") or {}).get("currency", "IDR"),
+                "Kuantitas":         qty,
+                "Metode Pembayaran": "",   # tidak ada
+                "Status Pesanan":    s.get("settlement_status", ""),
+                "Nama pengguna kreator": s.get("creator_username", ""),
+                "Jenis Konten":      s.get("content_type", ""),
+                "ID Konten":         s.get("content_id", ""),
+                "commission model":  s.get("commission_model", ""),
+                "Persentase komisi standar": float(s.get("commission_rate") or 0) / 100,  # "500" = 5%
+                "Est. Acuan Komisi":                   _amt(s, "estimated_commission_base"),
+                "Perkiraan pembayaran komisi standar": _amt(s, "estimated_paid_commission"),
+                "Acuan Komisi Aktual":                 _amt(s, "actual_commission_base"),
+                "Pembayaran Komisi Aktual":            _amt(s, "actual_paid_commission"),
+                "Persentase komisi Iklan Toko":        0,   # tidak ada
+                "Perkiraan pembayaran komisi Iklan Toko": _amt(s, "estimated_paid_shop_ads_commission"),
+                "Pembayaran komisi Iklan Toko aktual":    _amt(s, "actual_paid_shop_ads_commission"),
+                "Perkiraan bonus kreator":   _amt(s, "estimated_cofunded_creator_bonus_amount"),
+                "Bonus aktual kreator":      _amt(s, "actual_cofunded_creator_bonus_amount"),
+                "Pengembalian barang":       s.get("fully_return", ""),
+                "Pengembalian dana":         0,   # tidak ada
+                "Waktu Dibuat":              epoch_to_wib(o.get("create_time")),
+                "Waktu Pembayaran":          "",
+                "Waktu Pesanan Siap Dikirim": "",
+                "Order Delivery Time":       epoch_to_wib(o.get("delivery_time")),
+                "Waktu Pesanan Selesai":     "",
+                "Waktu Komisi Dibayar":      "",
+                "Platform":                  "TikTok",
+                "agreement_type":            "Open" if s.get("open_collaboration_id") else ("Target" if s.get("target_collaboration_id") else ""),
             })
     return pd.DataFrame(rows)
 
