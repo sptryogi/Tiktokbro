@@ -605,10 +605,11 @@ def get_product_ads_performance(access_token, shop_cipher, start_time, end_time,
         except (TypeError, ValueError):
             return 0.0
 
-    name_by_sku = {}
+    # sku_id -> (product_id, nama produk), dari line_items order
+    info_by_sku = {}
     for o in orders:
         for li in o.get("line_items", []):
-            name_by_sku[li.get("sku_id")] = li.get("product_name") or "Unknown"
+            info_by_sku[li.get("sku_id")] = (li.get("product_id") or "", li.get("product_name") or "Unknown")
 
     shown_err = False
     for idx, o in enumerate(orders):
@@ -620,36 +621,39 @@ def get_product_ads_performance(access_token, shop_cipher, start_time, end_time,
 
             currency = detail.get("currency", "IDR")
             for sku in detail.get("sku_transactions", []):
-                key = name_by_sku.get(sku.get("sku_id")) or sku.get("product_name") or "Unknown"
+                pid, pname = info_by_sku.get(sku.get("sku_id"),
+                                             ("", sku.get("product_name") or "Unknown"))
+                key = pid or pname
                 fee = (sku.get("fee_tax_breakdown") or {}).get("fee") or {}
-                row = per_product.setdefault(key, {"revenue": 0, "ad_cost": 0, "settlement": 0,
-                                                   "orders": 0, "qty": 0, "currency": currency})
-                row["ad_cost"]    += abs(_f(fee.get("gmv_max_ad_fee_amount")))
-                row["revenue"]    += _f(sku.get("revenue_amount"))
-                row["settlement"] += _f(sku.get("settlement_amount"))
-                row["orders"]     += 1
-                row["qty"]        += int(_f(sku.get("quantity")))
+                row = per_product.setdefault(key, {"product_id": pid, "name": pname,
+                                                   "revenue": 0.0, "ad_cost": 0.0,
+                                                   "orders": 0, "currency": currency})
+                row["revenue"] += _f(sku.get("revenue_amount"))
+                row["ad_cost"] += abs(_f(fee.get("gmv_max_ad_fee_amount")))
+                row["orders"]  += 1
 
         if progress_bar and orders:
             progress_bar.progress((idx + 1) / len(orders))
     return per_product
 
 def format_product_ads_excel(per_product):
+    cols = ["ID Produk", "Nama Produk", "Pesanan SKU", "Pendapatan Kotor",
+            "Biaya", "Biaya per Pesanan", "ROI", "Mata Uang"]
     rows = []
-    for name, d in per_product.items():
-        cost = d["ad_cost"]
+    for d in per_product.values():
+        cost, orders, rev = d["ad_cost"], d["orders"], d["revenue"]
         rows.append({
-            "Nama produk":            name,
-            "Pesanan":                d["orders"],
-            "Kuantitas Terjual":      d["qty"],
-            "Pendapatan kotor":       d["revenue"],
-            "Biaya Iklan (GMV Max)":  cost,
-            "Biaya per pesanan":      cost / d["orders"] if d["orders"] else 0,
-            "ROI":                    round((d["revenue"] - cost) / cost, 2) if cost else 0,
-            "Settlement Amount":      d["settlement"],
-            "Mata uang":              d["currency"],
+            "ID Produk":         str(d["product_id"]),          # teks, supaya angka panjang tidak rusak di Excel
+            "Nama Produk":       d["name"],
+            "Pesanan SKU":       orders,
+            "Pendapatan Kotor":  rev,
+            "Biaya":             cost,
+            "Biaya per Pesanan": round(cost / orders, 2) if orders else 0,
+            "ROI":               round(rev / cost, 2) if cost else 0,
+            "Mata Uang":         d["currency"],
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=cols)
+    return df.sort_values("Pendapatan Kotor", ascending=False).reset_index(drop=True)
     
 
 def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
