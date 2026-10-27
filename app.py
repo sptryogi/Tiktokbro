@@ -1469,9 +1469,13 @@ if selected_shop:
                     st.success(f"✅ {ok} resi digabung dalam 1 PDF")
                     st.download_button("📥 Download PDF Resi", pdf,
                                        f"Resi_A6_{date_suffix}.pdf", "application/pdf")
-                if failed:
-                    st.warning(f"⚠️ {len(failed)} resi gagal diambil")
-                    st.dataframe(pd.DataFrame(failed, columns=["Order ID", "Package ID", "Error"]),
+                picked = [f for f in failed if "21042102" in str(f[2])]
+                other  = [f for f in failed if "21042102" not in str(f[2])]
+                if picked:
+                    st.info(f"ℹ️ {len(picked)} paket sudah diambil kurir, resi tidak bisa dicetak lagi (aturan TikTok).")
+                if other:
+                    st.warning(f"⚠️ {len(other)} resi gagal diambil")
+                    st.dataframe(pd.DataFrame(other, columns=["Order ID", "Package ID", "Error"]),
                                  use_container_width=True)
 else:
     st.info("👈 Silakan hubungkan toko terlebih dahulu melalui sidebar.")
