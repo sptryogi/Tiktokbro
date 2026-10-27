@@ -41,8 +41,21 @@ WIB = timezone(timedelta(hours=7))
 # ─────────────────────────────────────────────
 # KONFIGURASI API & DB
 # ─────────────────────────────────────────────
-APP_KEY    = st.secrets["TIKTOK_APP_KEY"]
-APP_SECRET = st.secrets["TIKTOK_APP_SECRET"]
+# APP_KEY    = st.secrets["TIKTOK_APP_KEY"]
+# APP_SECRET = st.secrets["TIKTOK_APP_SECRET"]
+APPS = {"default": {"app_key": st.secrets["TIKTOK_APP_KEY"],
+                    "app_secret": st.secrets["TIKTOK_APP_SECRET"]}}
+for _name, _cfg in (st.secrets.get("apps") or {}).items():
+    APPS[_name] = {"app_key": _cfg["app_key"], "app_secret": _cfg["app_secret"]}
+
+APP_KEY, APP_SECRET = APPS["default"]["app_key"], APPS["default"]["app_secret"]
+
+def use_app(app_name):
+    """Pilih app yang dipakai semua fungsi API di bawahnya (dibaca saat dipanggil)."""
+    global APP_KEY, APP_SECRET
+    cfg = APPS.get(app_name or "default") or APPS["default"]
+    APP_KEY, APP_SECRET = cfg["app_key"], cfg["app_secret"]
+    
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 REDIRECT_URI = "https://tiktokbro.streamlit.app/"
@@ -92,14 +105,20 @@ def generate_signature(path: str, params: dict, app_secret: str, body: dict = No
 # ─────────────────────────────────────────────
 # AUTH
 # ─────────────────────────────────────────────
-def get_auth_url() -> str:
+# def get_auth_url() -> str:
+#     params = {
+#         "app_key":      APP_KEY,
+#         "state":        "TiktokbroAuth",
+#         "redirect_uri": REDIRECT_URI,
+#     }
+#     return f"{AUTH_URL_SELLER}?{urllib.parse.urlencode(params)}"
+def get_auth_url(app_name="default") -> str:
     params = {
-        "app_key":      APP_KEY,
-        "state":        "TiktokbroAuth",
+        "app_key":      APPS[app_name]["app_key"],
+        "state":        app_name,            # dikembalikan TikTok saat redirect
         "redirect_uri": REDIRECT_URI,
     }
     return f"{AUTH_URL_SELLER}?{urllib.parse.urlencode(params)}"
-
 
 def exchange_auth_code(auth_code: str) -> dict:
     """
@@ -1146,7 +1165,7 @@ def to_excel_download(df: pd.DataFrame) -> BytesIO:
 # ─────────────────────────────────────────────
 # DATABASE
 # ─────────────────────────────────────────────
-def save_token_to_db(token_data: dict, shop_info: dict, seller_name: str = "Unknown"):
+def save_token_to_db(token_data: dict, shop_info: dict, seller_name: str = "Unknown", app_name: str = "default"):
     """
     Simpan token ke Supabase.
 
@@ -1173,6 +1192,7 @@ def save_token_to_db(token_data: dict, shop_info: dict, seller_name: str = "Unkn
             "refresh_token":           token_data.get("refresh_token", ""),
             "access_token_expire_in":  token_data.get("access_token_expire_in", 86400),
             "refresh_token_expire_in": token_data.get("refresh_token_expire_in", 2592000),
+            "app_name": app_name,
             "updated_at":              datetime.now(timezone.utc).isoformat(),
         }
 
@@ -1196,6 +1216,7 @@ def get_shop_tokens():
 
 def try_refresh_if_expired(shop: dict) -> dict:
     """Refresh token jika hampir expired, kembalikan shop dengan token baru."""
+    use_app(shop.get("app_name"))
     try:
         updated_at = datetime.fromisoformat(shop["updated_at"].replace("Z", "+00:00"))
         expires_in = shop.get("access_token_expire_in", 86400)
@@ -1211,7 +1232,8 @@ def try_refresh_if_expired(shop: dict) -> dict:
                     "shop_cipher": shop["shop_cipher"],
                     "shop_name":   shop["shop_name"],
                 }
-                save_token_to_db(new_data, shop_info, shop["shop_name"])
+                save_token_to_db(new_data, shop_info, shop["shop_name"],
+                                 shop.get("app_name") or "default")
                 shop["access_token"] = new_data.get("access_token", shop["access_token"])
                 st.success("🔄 Token berhasil diperbarui otomatis.")
     except Exception:
@@ -1232,6 +1254,11 @@ auth_code = query_params.get("code")
 
 if auth_code:
     auth_code = str(auth_code)
+
+    app_name = str(query_params.get("state") or "default")
+    if app_name not in APPS:
+        app_name = "default"
+    use_app(app_name)
 
     # STEP 1: Tukar auth_code → access_token
     with st.spinner("Menukar kode otorisasi dengan access token..."):
@@ -1258,12 +1285,12 @@ if auth_code:
                 "shop_cipher": token_data.get("open_id", "unknown"),
                 "shop_name":   seller_name,
             }
-            result = save_token_to_db(token_data, fallback_shop_info, seller_name)
+            result = save_token_to_db(token_data, fallback_shop_info, seller_name, app_name)
         else:
             # Simpan semua toko yang diotorisasi (biasanya hanya 1)
             results = []
             for shop_info in authorized_shops:
-                r = save_token_to_db(token_data, shop_info, seller_name)
+                r = save_token_to_db(token_data, shop_info, seller_name, app_name)
                 results.append(r)
             result = any(r is not None for r in results)
 
@@ -1324,8 +1351,12 @@ with st.sidebar:
             f"🌍 UTC: {start_utc:%Y-%m-%d %H:%M} — {end_utc:%Y-%m-%d %H:%M}")
     st.markdown("---")
 
+    # if st.button("🔗 Hubungkan Toko Baru", use_container_width=True):
+    #     auth_url = get_auth_url()
+    #     st.markdown(f"[**Klik untuk Otorisasi TikTok Shop**]({auth_url})")
+    app_choice = st.selectbox("App untuk toko baru", list(APPS.keys()))
     if st.button("🔗 Hubungkan Toko Baru", use_container_width=True):
-        auth_url = get_auth_url()
+        auth_url = get_auth_url(app_choice)
         st.markdown(f"[**Klik untuk Otorisasi TikTok Shop**]({auth_url})")
 
 # ── Main Tabs ──────────────────────────────
