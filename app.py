@@ -714,7 +714,7 @@ def get_gmv_max_product_report(cfg, start_date, end_date):
             cfg, ["item_group_id"],
             ["cost", "orders", "cost_per_order", "gross_revenue", "roi"],
             start_date, end_date,
-            {"campaign_ids": [cid], "gmv_max_promotion_types": promo},
+            {"campaign_ids": [cid]},          # ← hanya campaign_ids
         ))
         time.sleep(0.3)
     return rows
