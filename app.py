@@ -668,18 +668,20 @@ def get_gmv_max_stores(cfg):
         return {"error": str(e)}
 
 
-def get_gmv_max_product_report(cfg, start_date, end_date):
+def _gmv_report(cfg, dimensions, metrics, start_date, end_date, filtering=None):
     rows, page = [], 1
     while page <= 50:
         params = {
             "advertiser_id": cfg["advertiser_id"],
             "store_ids":     json.dumps([str(cfg["store_id"])]),
-            "dimensions":    json.dumps(["item_group_id"]),
-            "metrics":       json.dumps(["cost", "orders", "cost_per_order", "gross_revenue", "roi"]),
+            "dimensions":    json.dumps(dimensions),
+            "metrics":       json.dumps(metrics),
             "start_date":    f"{start_date:%Y-%m-%d}",
             "end_date":      f"{end_date:%Y-%m-%d}",
             "page": page, "page_size": 1000,
         }
+        if filtering:
+            params["filtering"] = json.dumps(filtering)
         try:
             res = requests.get(f"{ADS_BASE}/gmv_max/report/get/", params=params,
                                headers={"Access-Token": cfg["access_token"]}, timeout=60).json()
@@ -692,6 +694,28 @@ def get_gmv_max_product_report(cfg, start_date, end_date):
         if page >= (data.get("page_info") or {}).get("total_page", 1):
             break
         page += 1
+        time.sleep(0.3)
+    return rows
+
+
+def get_gmv_max_product_report(cfg, start_date, end_date):
+    promo = ["PRODUCT"]
+    # 1) campaign yang punya aktivitas (biaya / pesanan) di periode ini
+    camp_rows = _gmv_report(cfg, ["campaign_id"], ["cost", "orders"], start_date, end_date,
+                            {"gmv_max_promotion_types": promo})
+    camp_ids = [(r.get("dimensions") or {}).get("campaign_id") for r in camp_rows]
+    camp_ids = [c for c in dict.fromkeys(camp_ids) if c]
+    st.caption(f"{len(camp_ids)} campaign GMV Max aktif di periode ini")
+
+    # 2) per campaign: laporan level produk
+    rows = []
+    for cid in camp_ids:
+        rows.extend(_gmv_report(
+            cfg, ["item_group_id"],
+            ["cost", "orders", "cost_per_order", "gross_revenue", "roi"],
+            start_date, end_date,
+            {"campaign_ids": [cid], "gmv_max_promotion_types": promo},
+        ))
         time.sleep(0.3)
     return rows
 
