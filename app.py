@@ -703,9 +703,13 @@ def get_gmv_max_product_report(cfg, start_date, end_date):
     # 1) campaign yang punya aktivitas (biaya / pesanan) di periode ini
     camp_rows = _gmv_report(cfg, ["campaign_id"], ["cost", "orders", "gross_revenue", "roi"], start_date, end_date,
                             {"gmv_max_promotion_types": promo})
-    camp_ids = [(r.get("dimensions") or {}).get("campaign_id") for r in camp_rows]
+    camp_ids = [
+        (r.get("dimensions") or {}).get("campaign_id")
+        for r in camp_rows
+        if float((r.get("metrics") or {}).get("cost") or 0) > 0
+    ]
     camp_ids = [c for c in dict.fromkeys(camp_ids) if c]
-    st.caption(f"{len(camp_ids)} campaign GMV Max aktif di periode ini")
+    st.caption(f"{len(camp_ids)} dari {len(camp_rows)} campaign punya biaya di periode ini")
 
     # 2) per campaign: laporan level produk
     rows = []
@@ -717,10 +721,6 @@ def get_gmv_max_product_report(cfg, start_date, end_date):
             {"campaign_ids": [cid]},          # ← hanya campaign_ids
         ))
         time.sleep(0.3)
-    st.session_state["gmv_dbg"] = {
-        "campaigns": camp_rows,
-        "items_sample": [r for r in rows if float((r.get("metrics") or {}).get("cost") or 0) > 0][:3],
-    }
     return rows
 
 
@@ -1417,13 +1417,17 @@ def exchange_ads_auth_code(auth_code):
 # Tangkap redirect dari otorisasi Ads (parameter auth_code; Shop memakai "code")
 ads_auth_code = st.query_params.get("auth_code")
 if ads_auth_code:
-    res = exchange_ads_auth_code(str(ads_auth_code))
-    if res.get("code") == 0:
-        d = res.get("data", {})
-        st.success("✅ Token Ads didapat. Salin ke secrets, lalu HAPUS blok ini dari kode.")
-        st.code(f'access_token = "{d.get("access_token")}"\n# advertiser_ids: {d.get("advertiser_ids")}')
-    else:
-        st.error(res)
+    code_str = str(ads_auth_code)
+    if st.session_state.get("ads_code_done") != code_str:
+        st.session_state["ads_code_done"] = code_str
+        res = exchange_ads_auth_code(code_str)
+        if res.get("code") == 0:
+            d = res.get("data", {})
+            st.success("✅ Token Ads didapat. Salin ke secrets.")
+            st.code(f'access_token = "{d.get("access_token")}"\n# advertiser_ids: {d.get("advertiser_ids")}')
+        else:
+            st.error(res)
+        st.query_params.clear()
       
 # ── Sidebar ────────────────────────────────
 with st.sidebar:
@@ -1611,10 +1615,6 @@ if selected_shop:
                                    f"Product_Data_{shop_cipher}_{date_suffix}.xlsx",
                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            if st.session_state.get("gmv_dbg"):
-                with st.expander("🔎 Debug mentah GMV Max (sementara)"):
-                    st.write("Level campaign:");  st.json(st.session_state["gmv_dbg"]["campaigns"])
-                    st.write("Contoh level produk:"); st.json(st.session_state["gmv_dbg"]["items_sample"])
             else:
                 st.info("Tidak ada produk dengan biaya iklan di periode ini.")
 
