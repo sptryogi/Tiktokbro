@@ -703,13 +703,10 @@ def get_gmv_max_product_report(cfg, start_date, end_date):
     # 1) campaign yang punya aktivitas (biaya / pesanan) di periode ini
     camp_rows = _gmv_report(cfg, ["campaign_id"], ["cost", "orders", "gross_revenue", "roi"], start_date, end_date,
                             {"gmv_max_promotion_types": promo})
-    camp_ids = [
-        (r.get("dimensions") or {}).get("campaign_id")
-        for r in camp_rows
-        if float((r.get("metrics") or {}).get("cost") or 0) > 0
-    ]
+    camp_ids = [(r.get("dimensions") or {}).get("campaign_id") for r in camp_rows]
     camp_ids = [c for c in dict.fromkeys(camp_ids) if c]
-    st.caption(f"{len(camp_ids)} dari {len(camp_rows)} campaign punya biaya di periode ini")
+    n_cost = sum(1 for r in camp_rows if float((r.get("metrics") or {}).get("cost") or 0) > 0)
+    st.caption(f"{len(camp_ids)} campaign GMV Max ditemukan di periode ini ({n_cost} berbiaya)")
 
     # 2) per campaign: laporan level produk
     rows = []
@@ -724,7 +721,7 @@ def get_gmv_max_product_report(cfg, start_date, end_date):
     return rows
 
 
-def format_gmv_max_excel(rows, access_token, shop_cipher):
+def format_gmv_max_excel(rows, access_token, shop_cipher, only_cost=False):
     agg = {}
     for r in rows:
         d, m = r.get("dimensions") or {}, r.get("metrics") or {}
@@ -749,7 +746,8 @@ def format_gmv_max_excel(rows, access_token, shop_cipher):
     cols = ["ID Produk", "Nama Produk", "Pesanan SKU", "Pendapatan Kotor",
             "Biaya", "Biaya per Pesanan", "ROI", "Mata Uang"]
     df = pd.DataFrame(out, columns=cols)
-    df = df[df["Biaya"] > 0]                    # buang produk tanpa biaya
+    if only_cost:
+        df = df[df["Biaya"] > 0]
     return df.sort_values(["Biaya", "Pendapatan Kotor"], ascending=False).reset_index(drop=True)
 
 def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
@@ -1596,12 +1594,13 @@ if selected_shop:
             with st.expander("🔎 Cek daftar store (untuk mencari store_id)"):
                 if st.button("Cek store", key="btn_stores"):
                     st.json(get_gmv_max_stores(ads_cfg))
-
+                  
+        only_cost = st.checkbox("Hanya produk yang ada biayanya", value=False)
         if st.button("🔄 Tarik & Download", key="btn_products", type="primary"):
             if ads_cfg:
                 with st.spinner("Mengambil laporan GMV Max..."):
                     rows = get_gmv_max_product_report(ads_cfg, start_date, end_date)
-                    df = format_gmv_max_excel(rows, access_token, shop_cipher) if rows else pd.DataFrame()
+                    df = format_gmv_max_excel(rows, access_token, shop_cipher, only_cost) if rows else pd.DataFrame()
             else:
                 st.info("Memakai data finance (kolom Biaya biasanya 0).")
                 progress = st.progress(0)
