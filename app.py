@@ -668,7 +668,15 @@ def get_gmv_max_stores(cfg):
     except Exception as e:
         return {"error": str(e)}
 
-
+def get_gmv_max_campaign_info(cfg, campaign_id):
+    try:
+        res = requests.get(f"{ADS_BASE}/campaign/gmv_max/info/",
+                           params={"advertiser_id": cfg["advertiser_id"], "campaign_id": campaign_id},
+                           headers={"Access-Token": cfg["access_token"]}, timeout=30).json()
+        return res.get("data") or {}
+    except Exception:
+        return {}
+      
 def _gmv_report(cfg, dimensions, metrics, start_date, end_date, filtering=None):
     rows, page = [], 1
     while page <= 50:
@@ -712,12 +720,22 @@ def get_gmv_max_product_report(cfg, start_date, end_date):
     # 2) per campaign: laporan level produk
     rows = []
     for cid in camp_ids:
-        rows.extend(_gmv_report(
+        got = _gmv_report(
             cfg, ["item_group_id"],
             ["cost", "orders", "cost_per_order", "gross_revenue", "roi"],
             start_date, end_date,
-            {"campaign_ids": [cid]},          # ← hanya campaign_ids
-        ))
+            {"campaign_ids": [cid]},
+        )
+        rows.extend(got)
+        if not got:                                   # campaign tanpa data produk
+            info = get_gmv_max_campaign_info(cfg, cid)
+            ids = info.get("item_group_ids") or [""]
+            for pid in ids:
+                rows.append({
+                    "dimensions": {"item_group_id": str(pid), "campaign_id": cid,
+                                   "_campaign_name": info.get("campaign_name", "")},
+                    "metrics": {"cost": "0", "orders": "0", "gross_revenue": "0"},
+                })
         time.sleep(0.3)
     return rows
 
@@ -727,16 +745,24 @@ def format_gmv_max_excel(rows, access_token, shop_cipher, only_cost=False):
     for r in rows:
         d, m = r.get("dimensions") or {}, r.get("metrics") or {}
         pid = str(d.get("item_group_id") or "")
-        a = agg.setdefault(pid, {"orders": 0.0, "cost": 0.0, "rev": 0.0, "cur": m.get("currency") or "IDR"})
+        key = pid or f"camp:{d.get('campaign_id')}"
+        a = agg.setdefault(key, {"pid": pid,
+                                 "label": d.get("_campaign_name") or d.get("campaign_id") or "",
+                                 "orders": 0.0, "cost": 0.0, "rev": 0.0,
+                                 "cur": m.get("currency") or "IDR"})
         a["orders"] += float(m.get("orders") or 0)
         a["cost"]   += float(m.get("cost") or 0)
         a["rev"]    += float(m.get("gross_revenue") or 0)
 
     cache, out = {}, []
-    for pid, a in agg.items():
+    for a in agg.values():
+        if a["pid"]:
+            name = get_product_title(access_token, shop_cipher, a["pid"], cache) or "(nama tidak ditemukan)"
+        else:
+            name = f"(Campaign {a['label']}: tidak ada data produk di periode ini)"
         out.append({
-            "ID Produk":         pid,   # teks, supaya angka panjang tidak rusak di Excel
-            "Nama Produk":       get_product_title(access_token, shop_cipher, pid, cache) or "(nama tidak ditemukan)",
+            "ID Produk":         a["pid"],
+            "Nama Produk":       name,
             "Pesanan SKU":       int(a["orders"]),
             "Pendapatan Kotor":  a["rev"],
             "Biaya":             a["cost"],
