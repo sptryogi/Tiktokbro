@@ -506,7 +506,8 @@ def get_shipping_label_url(access_token, shop_cipher, package_id, size="A6"):
     res = make_tiktok_request(
         f"/fulfillment/202309/packages/{package_id}/shipping_documents",
         access_token, shop_cipher, method="GET",
-        document_type="SHIPPING_LABEL", document_size=size, document_format="PDF",
+        document_type="SHIPPING_LABEL_AND_PACKING_SLIP",   # ← sebelumnya SHIPPING_LABEL
+        document_size=size, document_format="PDF",
     )
     if res.get("code") == 0:
         return (res.get("data") or {}).get("doc_url", ""), ""
@@ -1316,12 +1317,12 @@ def try_refresh_if_expired(shop: dict) -> dict:
     """Refresh token jika hampir expired, kembalikan shop dengan token baru."""
     use_app(shop.get("app_name"))
     try:
-        updated_at = datetime.fromisoformat(shop["updated_at"].replace("Z", "+00:00"))
-        expires_in = shop.get("access_token_expire_in", 86400)
-        expiry     = updated_at + timedelta(seconds=expires_in)
-        now        = datetime.now(timezone.utc)
+        exp = float(shop.get("access_token_expire_in") or 0)
+        if exp < 1e9:                      # data lama berbentuk durasi (detik)
+            updated_at = datetime.fromisoformat(shop["updated_at"].replace("Z", "+00:00"))
+            exp = updated_at.timestamp() + exp
 
-        if now >= expiry - timedelta(minutes=10):
+        if time.time() >= exp - 600:       # refresh 10 menit sebelum habis
             result = refresh_access_token(shop["refresh_token"])
             if result.get("code") == 0:
                 new_data  = result.get("data", {})
@@ -1334,6 +1335,8 @@ def try_refresh_if_expired(shop: dict) -> dict:
                                  shop.get("app_name") or "default")
                 shop["access_token"] = new_data.get("access_token", shop["access_token"])
                 st.success("🔄 Token berhasil diperbarui otomatis.")
+            else:
+                st.warning(f"Refresh token gagal ({result.get('message')}). Hubungkan ulang toko ini.")
     except Exception:
         pass
     return shop
