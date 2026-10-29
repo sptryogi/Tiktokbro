@@ -701,7 +701,7 @@ def _gmv_report(cfg, dimensions, metrics, start_date, end_date, filtering=None):
 def get_gmv_max_product_report(cfg, start_date, end_date):
     promo = ["PRODUCT"]
     # 1) campaign yang punya aktivitas (biaya / pesanan) di periode ini
-    camp_rows = _gmv_report(cfg, ["campaign_id"], ["cost", "orders"], start_date, end_date,
+    camp_rows = _gmv_report(cfg, ["campaign_id"], ["cost", "orders", "gross_revenue", "roi"], start_date, end_date,
                             {"gmv_max_promotion_types": promo})
     camp_ids = [(r.get("dimensions") or {}).get("campaign_id") for r in camp_rows]
     camp_ids = [c for c in dict.fromkeys(camp_ids) if c]
@@ -717,6 +717,10 @@ def get_gmv_max_product_report(cfg, start_date, end_date):
             {"campaign_ids": [cid]},          # ← hanya campaign_ids
         ))
         time.sleep(0.3)
+    st.session_state["gmv_dbg"] = {
+        "campaigns": camp_rows,
+        "items_sample": [r for r in rows if float((r.get("metrics") or {}).get("cost") or 0) > 0][:3],
+    }
     return rows
 
 
@@ -744,9 +748,9 @@ def format_gmv_max_excel(rows, access_token, shop_cipher):
         })
     cols = ["ID Produk", "Nama Produk", "Pesanan SKU", "Pendapatan Kotor",
             "Biaya", "Biaya per Pesanan", "ROI", "Mata Uang"]
-    return (pd.DataFrame(out, columns=cols)
-              .sort_values(["Biaya", "Pendapatan Kotor"], ascending=False)
-              .reset_index(drop=True))
+    df = pd.DataFrame(out, columns=cols)
+    df = df[df["Biaya"] > 0]                    # buang produk tanpa biaya
+    return df.sort_values(["Biaya", "Pendapatan Kotor"], ascending=False).reset_index(drop=True)
 
 def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
     all_orders, page_token = [], None
@@ -1606,8 +1610,13 @@ if selected_shop:
                 st.download_button("📥 Download Excel Produk", to_excel_download(df),
                                    f"Product_Data_{shop_cipher}_{date_suffix}.xlsx",
                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            if st.session_state.get("gmv_dbg"):
+                with st.expander("🔎 Debug mentah GMV Max (sementara)"):
+                    st.write("Level campaign:");  st.json(st.session_state["gmv_dbg"]["campaigns"])
+                    st.write("Contoh level produk:"); st.json(st.session_state["gmv_dbg"]["items_sample"])
             else:
-                st.info("Tidak ada data iklan untuk periode ini.")
+                st.info("Tidak ada produk dengan biaya iklan di periode ini.")
 
     # ── TAB 5: RESI ────────────────────────
     with tab5:
