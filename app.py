@@ -1324,7 +1324,7 @@ st.markdown("### Integrasi TikTok Shop Seller API · Timezone WIB (UTC+7)")
 query_params = st.query_params
 auth_code = query_params.get("code")
 
-if auth_code:
+if auth_code and str(query_params.get("state")) != "ads":
     auth_code = str(auth_code)
 
     app_name = str(query_params.get("state") or "default")
