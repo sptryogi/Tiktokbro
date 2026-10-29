@@ -654,7 +654,75 @@ def format_product_ads_excel(per_product):
         })
     df = pd.DataFrame(rows, columns=cols)
     return df.sort_values("Pendapatan Kotor", ascending=False).reset_index(drop=True)
-    
+
+ADS_BASE = "https://business-api.tiktok.com/open_api/v1.3"
+
+
+def get_gmv_max_stores(cfg):
+    """Bantu cari store_id: daftar store yang terhubung ke advertiser."""
+    try:
+        return requests.get(f"{ADS_BASE}/gmv_max/store/list/",
+                            params={"advertiser_id": cfg["advertiser_id"]},
+                            headers={"Access-Token": cfg["access_token"]}, timeout=30).json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_gmv_max_product_report(cfg, start_date, end_date):
+    rows, page = [], 1
+    while page <= 50:
+        params = {
+            "advertiser_id": cfg["advertiser_id"],
+            "store_ids":     json.dumps([str(cfg["store_id"])]),
+            "dimensions":    json.dumps(["item_group_id"]),
+            "metrics":       json.dumps(["cost", "orders", "cost_per_order", "gross_revenue", "roi"]),
+            "start_date":    f"{start_date:%Y-%m-%d}",
+            "end_date":      f"{end_date:%Y-%m-%d}",
+            "page": page, "page_size": 1000,
+        }
+        try:
+            res = requests.get(f"{ADS_BASE}/gmv_max/report/get/", params=params,
+                               headers={"Access-Token": cfg["access_token"]}, timeout=60).json()
+        except Exception as e:
+            st.error(f"GMV Max request gagal: {e}"); break
+        if res.get("code") != 0:
+            st.error(f"GMV Max API: {res.get('code')} {res.get('message')}"); break
+        data = res.get("data") or {}
+        rows.extend(data.get("list") or [])
+        if page >= (data.get("page_info") or {}).get("total_page", 1):
+            break
+        page += 1
+        time.sleep(0.3)
+    return rows
+
+
+def format_gmv_max_excel(rows, access_token, shop_cipher):
+    agg = {}
+    for r in rows:
+        d, m = r.get("dimensions") or {}, r.get("metrics") or {}
+        pid = str(d.get("item_group_id") or "")
+        a = agg.setdefault(pid, {"orders": 0.0, "cost": 0.0, "rev": 0.0, "cur": m.get("currency") or "IDR"})
+        a["orders"] += float(m.get("orders") or 0)
+        a["cost"]   += float(m.get("cost") or 0)
+        a["rev"]    += float(m.get("gross_revenue") or 0)
+
+    cache, out = {}, []
+    for pid, a in agg.items():
+        out.append({
+            "ID Produk":         pid,   # teks, supaya angka panjang tidak rusak di Excel
+            "Nama Produk":       get_product_title(access_token, shop_cipher, pid, cache) or "(nama tidak ditemukan)",
+            "Pesanan SKU":       int(a["orders"]),
+            "Pendapatan Kotor":  a["rev"],
+            "Biaya":             a["cost"],
+            "Biaya per Pesanan": round(a["cost"] / a["orders"], 2) if a["orders"] else 0,
+            "ROI":               round(a["rev"] / a["cost"], 2) if a["cost"] else 0,
+            "Mata Uang":         a["cur"],
+        })
+    cols = ["ID Produk", "Nama Produk", "Pesanan SKU", "Pendapatan Kotor",
+            "Biaya", "Biaya per Pesanan", "ROI", "Mata Uang"]
+    return (pd.DataFrame(out, columns=cols)
+              .sort_values(["Biaya", "Pendapatan Kotor"], ascending=False)
+              .reset_index(drop=True))
 
 def get_affiliate_orders(access_token, shop_cipher, start_time, end_time):
     all_orders, page_token = [], None
@@ -1306,6 +1374,29 @@ if auth_code:
         else:
             st.error("❌ Gagal menyimpan ke database. Cek debug di atas.")
 
+ADS_APP = st.secrets.get("ads_app") or {}
+
+def get_ads_auth_url(state="ads"):
+    return "https://business-api.tiktok.com/portal/auth?" + urllib.parse.urlencode(
+        {"app_id": ADS_APP.get("app_id", ""), "state": state, "redirect_uri": REDIRECT_URI})
+
+def exchange_ads_auth_code(auth_code):
+    r = requests.post("https://business-api.tiktok.com/open_api/v1.3/oauth2/access_token/",
+                      json={"app_id": ADS_APP["app_id"], "secret": ADS_APP["secret"],
+                            "auth_code": auth_code}, timeout=30)
+    return r.json()
+
+# Tangkap redirect dari otorisasi Ads (parameter auth_code; Shop memakai "code")
+ads_auth_code = st.query_params.get("auth_code")
+if ads_auth_code:
+    res = exchange_ads_auth_code(str(ads_auth_code))
+    if res.get("code") == 0:
+        d = res.get("data", {})
+        st.success("✅ Token Ads didapat. Salin ke secrets, lalu HAPUS blok ini dari kode.")
+        st.code(f'access_token = "{d.get("access_token")}"\n# advertiser_ids: {d.get("advertiser_ids")}')
+    else:
+        st.error(res)
+      
 # ── Sidebar ────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Konfigurasi Toko")
@@ -1362,6 +1453,7 @@ with st.sidebar:
     if st.button("🔗 Hubungkan Toko Baru", use_container_width=True):
         auth_url = get_auth_url(app_choice)
         st.markdown(f"[**Klik untuk Otorisasi TikTok Shop**]({auth_url})")
+        st.markdown(f"[🔗 Otorisasi Akun Iklan]({get_ads_auth_url()})")
 
 # ── Main Tabs ──────────────────────────────
 if selected_shop:
@@ -1460,24 +1552,38 @@ if selected_shop:
 
     # ── TAB 4: PRODUCTS ────────────────────
     with tab4:
-        st.subheader("Data Produk (Iklan)")
+        st.subheader("Data Produk (Iklan GMV Max)")
         st.caption(f"WIB: {start_date:%d %b %Y %H:%M} — {end_date:%d %b %Y %H:%M}")
+        ads_cfg = (st.secrets.get("ads_accounts") or {}).get(selected_shop["shop_id"])
+
+        if not ads_cfg:
+            st.warning("Kredensial Ads belum diisi untuk toko ini. Tambahkan di secrets, nama blok:")
+            st.code(f'[ads_accounts."{selected_shop["shop_id"]}"]')
+
+        if ads_cfg:
+            with st.expander("🔎 Cek daftar store (untuk mencari store_id)"):
+                if st.button("Cek store", key="btn_stores"):
+                    st.json(get_gmv_max_stores(ads_cfg))
+
         if st.button("🔄 Tarik & Download", key="btn_products", type="primary"):
-            with st.spinner("Mengambil data performa iklan per produk..."):
+            if ads_cfg:
+                with st.spinner("Mengambil laporan GMV Max..."):
+                    rows = get_gmv_max_product_report(ads_cfg, start_date, end_date)
+                    df = format_gmv_max_excel(rows, access_token, shop_cipher) if rows else pd.DataFrame()
+            else:
+                st.info("Memakai data finance (kolom Biaya biasanya 0).")
                 progress = st.progress(0)
                 per_product = get_product_ads_performance(access_token, shop_cipher, start_utc, end_utc, progress_bar=progress)
-            if per_product:
-                df = format_product_ads_excel(per_product)
-                st.success(f"✅ {len(df)} produk")
+                df = format_product_ads_excel(per_product) if per_product else pd.DataFrame()
+
+            if not df.empty:
+                st.success(f"✅ {len(df)} produk · Total biaya: {df['Biaya'].sum():,.0f} {df['Mata Uang'].iloc[0]}")
                 st.dataframe(df, use_container_width=True)
-                st.download_button(
-                    "📥 Download Excel Produk",
-                    to_excel_download(df),
-                    f"Product_Data_{shop_cipher}_{date_suffix}.xlsx",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+                st.download_button("📥 Download Excel Produk", to_excel_download(df),
+                                   f"Product_Data_{shop_cipher}_{date_suffix}.xlsx",
+                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             else:
-                st.info("Tidak ada data produk/iklan untuk periode ini.")
+                st.info("Tidak ada data iklan untuk periode ini.")
 
     # ── TAB 5: RESI ────────────────────────
     with tab5:
